@@ -87,11 +87,22 @@ def tags(path: Path) -> tuple[str, str]:
 
 
 def add_owned(keys: set, by_artist: dict, artist: str, title: str) -> None:
-    """Record one owned track into the exact-key set and the fuzzy index."""
+    """Record one owned track into the exact-key set and the fuzzy index.
+
+    Compilations (Bravo Hits, samplers) often tag every track's artist with the
+    *compilation* name and put "RealArtist - Song" in the title. So when the
+    title looks like "Artist - Song", also index it under that real artist — else
+    a play by the real artist wouldn't match a song you own on a compilation.
+    """
     if not title:
         return
     keys.add(track_key(artist, title))
     by_artist.setdefault(artist_bucket(artist), set()).add(normalize(title))
+    if " - " in title:
+        left, right = (s.strip() for s in title.split(" - ", 1))
+        if left and right:
+            keys.add(track_key(left, right))
+            by_artist.setdefault(artist_bucket(left), set()).add(normalize(right))
 
 
 def owns(keys: set, by_artist: dict, artist: str, title: str) -> bool:

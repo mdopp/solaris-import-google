@@ -23,6 +23,13 @@ def test_owns_ignores_the_prefix(music_dir):
     assert library.owns(keys, by, "The Smashing Pumpkins", "Ava Adore") is True
 
 
+def test_owns_compilation_artist_in_title():
+    # Bravo-Hits style: artist tag is the compilation, real artist is in the title.
+    keys, by = set(), {}
+    library.add_owned(keys, by, "Bravo Hits 28", "Dr. Ring-Ding - Ring Of Fire")
+    assert library.owns(keys, by, "Dr. Ring-Ding", "Ring Of Fire") is True
+
+
 def test_track_number_prefix_stripped(music_dir):
     music_dir.add("Band", "Album", "03 - Real Title")
     keys, _by = library.owned_index()

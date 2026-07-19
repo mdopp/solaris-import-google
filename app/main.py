@@ -7,12 +7,13 @@ POSTs uploaded Takeout files to the per-type endpoints below.
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
-from . import __version__, identity, jobs, music_shopping
+from . import __version__, config, identity, jobs, music_shopping
 from .importers import calendar as cal_importer
 from .importers import contacts as contacts_importer
 from .importers import keep as keep_importer
@@ -100,6 +101,25 @@ async def keep_import(request: Request, files: list[UploadFile] = File(...)):
 
 # --- music shopping list --------------------------------------------------
 
+@jobs.runner("music")
+def _music_runner(spec: dict):
+    """Rebuild the analysis generator from a persisted job spec (used both on
+    first start and when resuming after a restart)."""
+    data = Path(spec["input"]).read_bytes()
+    opts = spec.get("opts", {})
+
+    def factory(is_canceled):
+        return music_shopping.analyze_iter(data, is_canceled=is_canceled, **opts)
+
+    return factory
+
+
+@app.on_event("startup")
+def _resume_jobs():
+    # Re-spawn any job that was still running when the process last stopped.
+    jobs.resume()
+
+
 @app.post("/api/music/analyze")
 async def music_analyze(
     request: Request,
@@ -109,26 +129,36 @@ async def music_analyze(
     resolve: bool = Form(True),
     cap: int = Form(400),
 ):
-    """Start a durable analysis job and return its id. The heavy work (library
-    scan + album resolution) runs server-side in a background thread so it
-    survives a page reload; the client polls /api/music/job/{id}. Upfront options
-    bound the runtime."""
-    _user(request)
+    """Start a server-side analysis job and return its id. The work runs
+    independent of the browser (survives reload; the client reconnects via
+    /api/music/latest or /api/music/job/{id}). The input is persisted so the job
+    resumes after a service restart. Upfront options bound the runtime."""
+    user = _user(request)
     _, data = await _one_file(file)
+    jobs_dir = config.DATA_DIR / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    inp = jobs_dir / f"{uuid.uuid4().hex}.input"
+    inp.write_bytes(data)
+    spec = {
+        "kind": "music",
+        "input": str(inp),
+        "opts": {"min_plays": min_plays, "months": months, "resolve": resolve, "cap": cap},
+    }
+    return {"jobId": jobs.start(user, spec)}
 
-    def factory(is_canceled):
-        return music_shopping.analyze_iter(
-            data, min_plays=min_plays, months=months, resolve=resolve,
-            cap=cap, is_canceled=is_canceled,
-        )
 
-    return {"jobId": jobs.start(factory)}
+@app.get("/api/music/latest")
+def music_latest(request: Request):
+    """The acting user's current/most-recent job, so any fresh page load can
+    attach to the running server-side process without client-side state."""
+    user = _user(request)
+    return jobs.latest_for(user)
 
 
 @app.get("/api/music/job/{jid}")
 def music_job(request: Request, jid: str):
-    _user(request)
-    st = jobs.get(jid)
+    user = _user(request)
+    st = jobs.get(jid, owner=user)
     if not st:
         raise HTTPException(status_code=404, detail="unbekannter Job")
     return st
@@ -136,8 +166,8 @@ def music_job(request: Request, jid: str):
 
 @app.post("/api/music/job/{jid}/cancel")
 def music_job_cancel(request: Request, jid: str):
-    _user(request)
-    return {"canceled": jobs.cancel(jid)}
+    user = _user(request)
+    return {"canceled": jobs.cancel(jid, owner=user)}
 
 
 @app.post("/api/music/export/csv")

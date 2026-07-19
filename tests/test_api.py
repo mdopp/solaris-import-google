@@ -68,6 +68,17 @@ def test_music_job_unknown_404(client):
     assert client.get("/api/music/job/nope").status_code == 404
 
 
+def test_music_latest_attaches_to_server_job(client):
+    # the server owns the job; /latest lets a fresh page attach without any
+    # client-side state.
+    r = client.post("/api/music/analyze",
+                    files={"file": ("h.json", HIST, "application/json")},
+                    data={"resolve": "false"})
+    jid = r.json()["jobId"]
+    latest = client.get("/api/music/latest").json()
+    assert latest and latest["jobId"] and "status" in latest
+
+
 def test_music_analyze_requires_file(client):
     assert client.post("/api/music/analyze").status_code == 422
 

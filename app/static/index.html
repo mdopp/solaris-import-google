@@ -304,7 +304,6 @@ document.querySelectorAll('.card[data-type]:not([data-type="music"])').forEach(c
 // ---- music: durable job + reconnect ----
 const mcard=$('.card[data-type="music"]');
 let lastAlbums=[], activeJob=null, pollTimer=null;
-const JKEY='music_job';
 
 function musicBusy(on){
   const a=$('.act-analyze',mcard);
@@ -318,21 +317,16 @@ function startPoll(){ stopPoll(); pollTimer=setInterval(pollJob,1500); pollJob()
 
 async function pollJob(){
   if(!activeJob)return;
-  let st;
-  try{
-    const r=await fetch(`/api/music/job/${activeJob}`);
-    if(r.status===404) throw new Error('nf');
-    st=await r.json();
-  }catch(e){
-    stopPoll(); musicBusy(false); hideProgress(mcard);
-    localStorage.removeItem(JKEY); activeJob=null; return;
-  }
+  let r;
+  try{ r=await fetch(`/api/music/job/${activeJob}`); }
+  catch(e){ return; }  // transient (reload/offline): keep the job, retry next tick
+  if(r.status===404){ stopPoll(); musicBusy(false); hideProgress(mcard); activeJob=null; return; }
+  let st; try{ st=await r.json(); }catch(e){ return; }
   const pr=st.progress||{};
   if(st.status==='running'){ showProgress(mcard,{pct:pr.pct||0,text:pr.message||'…'}); return; }
-  stopPoll(); musicBusy(false); hideProgress(mcard);
-  localStorage.removeItem(JKEY); activeJob=null;
+  stopPoll(); musicBusy(false); hideProgress(mcard); activeJob=null;
   if(st.status==='canceled'){ showOut(mcard,'Abgebrochen.','err'); return; }
-  if(st.status==='interrupted'){ showOut(mcard,'Analyse wurde durch einen Neustart unterbrochen — bitte erneut starten (bereits aufgelöste Alben sind gecacht).','err'); return; }
+  if(st.status==='interrupted'){ showOut(mcard,'Analyse wurde unterbrochen — bitte erneut starten (bereits aufgelöste Alben sind gecacht).','err'); return; }
   if(st.status==='error'){ showOut(mcard,'Fehler: '+esc(st.error||'unbekannt'),'err'); return; }
   if(st.result) renderResult(st.result);
 }
@@ -369,7 +363,7 @@ $('.act-analyze',mcard).onclick=async()=>{
     const r=await fetch('/api/music/analyze',{method:'POST',body:fd});
     const d=await r.json();
     if(!r.ok||!d.jobId) throw new Error(d.error||d.detail||('HTTP '+r.status));
-    activeJob=d.jobId; localStorage.setItem(JKEY,d.jobId); startPoll();
+    activeJob=d.jobId; startPoll();
   }catch(e){ musicBusy(false); hideProgress(mcard); showOut(mcard,'Fehler: '+esc(e.message),'err'); }
 };
 
@@ -380,12 +374,21 @@ $('.act-cancel',mcard).onclick=async()=>{
   b.disabled=false;
 };
 
-// reconnect to a job still running after a page reload
-(function(){
-  const jid=localStorage.getItem(JKEY); if(!jid) return;
-  activeJob=jid; musicBusy(true);
-  showProgress(mcard,{pct:0,text:'Verbinde mit laufender Analyse …'});
-  startPoll();
+// The job lives on the server; the page is only a view. On load, ask the server
+// for this user's current/last job and attach to it — so a reload (or a whole
+// different browser) reconnects to the running process instead of losing it.
+(async function(){
+  try{
+    const r=await fetch('/api/music/latest'); if(!r.ok) return;
+    const d=await r.json(); if(!d||!d.jobId) return;
+    if(d.status==='running'){
+      activeJob=d.jobId; musicBusy(true);
+      showProgress(mcard,{pct:(d.progress||{}).pct||0,text:'Verbinde mit laufender Analyse …'});
+      startPoll();
+    }else if(d.status==='done' && d.result){
+      renderResult(d.result);
+    }
+  }catch(e){}
 })();
 
 function renderAlbums(albums){

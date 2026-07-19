@@ -45,3 +45,16 @@ def test_cache_reused_when_unchanged(music_dir):
 
 def test_empty_library(music_dir):
     assert library.owned_keys() == set()
+
+
+def test_audiobooks_folder_included(tmp_path, monkeypatch):
+    from app import config
+    (tmp_path / "music").mkdir()
+    ab = tmp_path / "audiobooks" / "Paw Patrol"
+    ab.mkdir(parents=True)
+    (ab / "Kapitel 10.mp3").write_bytes(b"")
+    monkeypatch.setattr(config, "MUSIC_DIR", tmp_path / "music")
+    monkeypatch.setattr(config, "AUDIOBOOKS_DIR", tmp_path / "audiobooks")
+    library._cache.update({"sig": None, "keys": set(), "by_artist": {}, "count": 0})
+    keys, _by = library.owned_index()
+    assert track_key("Paw Patrol", "Kapitel 10") in keys

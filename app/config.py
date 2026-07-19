@@ -39,6 +39,10 @@ NOTES_DIR = Path(os.environ.get("NOTES_DIR", str(FILESHARE_DATA / "notes")))
 # The existing music library scanned to know what the user already owns.
 MUSIC_DIR = Path(os.environ.get("MUSIC_DIR", str(FILESHARE_DATA / "music")))
 
+# Also scanned for ownership so owned audiobooks/Hörspiele aren't shown as
+# missing. (Podcasts are intentionally NOT scanned.)
+AUDIOBOOKS_DIR = Path(os.environ.get("AUDIOBOOKS_DIR", str(FILESHARE_DATA / "audiobooks")))
+
 # Writable scratch dir for caches (ytmusicapi album cache, uploads staging).
 DATA_DIR = Path(os.environ.get("IMPORT_DATA_DIR", "/data"))
 

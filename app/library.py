@@ -31,15 +31,33 @@ _FUZZY_MAX = 400
 _cache: dict = {"sig": None, "keys": set(), "by_artist": {}, "count": 0}
 
 
+def _roots() -> list[Path]:
+    """Folders scanned for ownership: music + audiobooks (Podcasts excluded)."""
+    roots = [config.MUSIC_DIR, getattr(config, "AUDIOBOOKS_DIR", None)]
+    seen, out = set(), []
+    for r in roots:
+        if r and r.exists() and str(r) not in seen:
+            seen.add(str(r))
+            out.append(r)
+    return out
+
+
+def _rel_parts(path: Path) -> tuple:
+    for root in _roots():
+        try:
+            return path.relative_to(root).parts
+        except ValueError:
+            continue
+    return path.parts
+
+
 def list_audio_files() -> list[Path]:
-    root = config.MUSIC_DIR
-    if not root.exists():
-        return []
     out: list[Path] = []
-    for dirpath, _dirs, files in os.walk(root):
-        for f in files:
-            if os.path.splitext(f)[1].lower() in _AUDIO_EXTS:
-                out.append(Path(dirpath) / f)
+    for root in _roots():
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                if os.path.splitext(f)[1].lower() in _AUDIO_EXTS:
+                    out.append(Path(dirpath) / f)
     return out
 
 
@@ -73,10 +91,7 @@ def tags(path: Path) -> tuple[str, str]:
                 return artist, title
     except Exception:
         pass
-    try:
-        parts = path.relative_to(config.MUSIC_DIR).parts
-    except ValueError:
-        parts = path.parts
+    parts = _rel_parts(path)
     artist = parts[0] if len(parts) >= 2 else ""
     title = os.path.splitext(path.name)[0]
     for sep in (" - ", " "):

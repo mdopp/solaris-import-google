@@ -48,7 +48,7 @@ def music_dir(tmp_path, monkeypatch):
     d = tmp_path / "music"
     d.mkdir()
     monkeypatch.setattr(config, "MUSIC_DIR", d)
-    library._cache.update({"sig": None, "keys": set(), "count": 0})
+    library._cache.update({"sig": None, "keys": set(), "by_artist": {}, "count": 0})
 
     def add(artist: str, album: str, title: str):
         p = d / artist / album

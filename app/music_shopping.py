@@ -294,9 +294,9 @@ def analyze_iter(history_bytes: bytes, *, min_plays: int = 1, months: int = 0,
     # --- library scan (incremental; the slow, Jellyfin-side comparison) -------
     files = library.list_audio_files()
     sig = library.signature_of(files)
-    owned = library.cached_keys(sig)
-    if owned is None:
-        owned = set()
+    cached = library.cached_index(sig)
+    if cached is None:
+        owned, by_artist = set(), {}
         total = len(files)
         yield {"stage": "library", "message": f"Bibliothek scannen … 0/{total}",
                "done": 0, "total": total, "pct": 10}
@@ -304,20 +304,20 @@ def analyze_iter(history_bytes: bytes, *, min_plays: int = 1, months: int = 0,
             if is_canceled():
                 return
             artist, title = library.tags(p)
-            if title:
-                owned.add(track_key(artist, title))
+            library.add_owned(owned, by_artist, artist, title)
             if i % 200 == 0 or i == total:
                 yield {"stage": "library", "message": f"Bibliothek scannen … {i}/{total}",
                        "done": i, "total": total, "pct": 10 + int(20 * i / max(total, 1))}
-        library.set_cache(sig, owned, total)
+        library.set_cache(sig, owned, by_artist, total)
     else:
-        library.set_cache(sig, owned, len(files))
+        owned, by_artist = cached
+        library.set_cache(sig, owned, by_artist, len(files))
         yield {"stage": "library", "message": f"Bibliothek gecacht ({len(files)} Tracks)",
                "pct": 30}
 
-    # --- diff -----------------------------------------------------------------
+    # --- diff (exact + fuzzy: catches library tag typos & "The" prefixes) -----
     missing = [p for p in plays.values()
-               if track_key(p["artist"], p["title"]) not in owned]
+               if not library.owns(owned, by_artist, p["artist"], p["title"])]
     owned_matches = len(plays) - len(missing)
     missing.sort(key=lambda p: p["count"], reverse=True)
     yield {"stage": "match", "message": f"{owned_matches} vorhanden · {len(missing)} fehlen",

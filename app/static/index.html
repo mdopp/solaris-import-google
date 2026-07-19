@@ -101,6 +101,25 @@
   tbody tr:hover{background:#111a2b}
   .stats{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:12px;color:var(--muted);font-size:13px}
   .stats b{color:var(--fg);font-variant-numeric:tabular-nums}
+  .tree-search{width:100%;margin-top:14px;padding:11px 14px;min-height:46px;font-size:16px;
+    background:#0f1520;border:1px solid var(--line);border-radius:var(--radius-sm);color:var(--fg)}
+  .tree{margin-top:12px}
+  .tree details{border:1px solid var(--line);border-radius:10px;margin:6px 0;background:#0f141d;overflow:hidden}
+  .tree details[open]{background:#111a2b}
+  .tree summary{cursor:pointer;padding:9px 12px;display:flex;align-items:center;gap:8px;list-style:none;font-size:14px}
+  .tree summary::-webkit-details-marker{display:none}
+  .tree summary::before{content:"▸";color:var(--muted);transition:transform .15s;flex:0 0 auto}
+  .tree details[open]>summary::before{transform:rotate(90deg)}
+  .tree .cat>summary{font-weight:700;font-size:15px}
+  .tree .art{margin:6px 8px}
+  .tree .alb{margin:6px 10px}
+  .tree .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tree .count{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums;font-size:12px;flex:0 0 auto}
+  .tree .songs{list-style:none;margin:0;padding:2px 12px 10px 32px}
+  .tree .songs li{display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px solid #1c2430;font-size:13px}
+  .tree .songs li .p{color:var(--muted);font-variant-numeric:tabular-nums;flex:0 0 auto}
+  .tree select.catsel{background:#0f1520;border:1px solid var(--line);border-radius:8px;color:var(--fg);font-size:12px;padding:3px 6px;flex:0 0 auto}
+  .tree .badge{font-size:11px;color:var(--warn);flex:0 0 auto}
   .muted{color:var(--muted);font-size:12px}
   .foot{color:var(--muted);font-size:12px;margin-top:22px;text-align:center}
 
@@ -219,6 +238,7 @@
       </div>
       <div class="progress"><div class="ptrack"><div class="pbar"></div></div><div class="ptext"></div></div>
       <div class="out"></div>
+      <input class="tree-search" type="search" placeholder="Suche Artist / Album / Song …" style="display:none">
       <div class="result"></div>
     </section>
 
@@ -303,7 +323,11 @@ document.querySelectorAll('.card[data-type]:not([data-type="music"])').forEach(c
 
 // ---- music: durable job + reconnect ----
 const mcard=$('.card[data-type="music"]');
-let lastAlbums=[], activeJob=null, pollTimer=null;
+let lastGroups=[], activeJob=null, pollTimer=null, catOverride={};
+const CAT_ORDER=['Musik','Podcast','Hörspiel','Sonstiges'];
+const escA=s=>esc(s).replace(/"/g,'&quot;');
+const effCat=g=>catOverride[g.artist]||g.category;
+const sumPlays=gs=>gs.reduce((n,g)=>n+g.plays,0);
 
 function musicBusy(on){
   const a=$('.act-analyze',mcard);
@@ -332,20 +356,21 @@ async function pollJob(){
 }
 
 function renderResult(result){
-  lastAlbums=result.albums||[];
-  const cap=result.resolve_cap?` · Album-Auflösung auf Top ${result.resolve_cap} begrenzt`:'';
+  lastGroups=result.groups||[];
+  catOverride={};
+  const cap=result.resolve_cap?` · Auflösung auf Top ${result.resolve_cap} begrenzt`:'';
   showOut(mcard,
     `<div class="stats">`+
     `<span>Bibliothek <b>${result.library_size}</b></span>`+
-    `<span>Historie <b>${result.history_plays}</b> Abspielungen</span>`+
-    `<span><b>${result.unique_tracks}</b> Songs</span>`+
+    `<span>Historie <b>${result.history_plays}</b> ▶</span>`+
     `<span>schon vorhanden <b>${result.owned_matches}</b></span>`+
-    `<span>fehlen <b>${result.missing_tracks}</b></span>`+
-    `<span>aufgelöst <b>${result.resolved_tracks}</b> / offen <b>${result.unresolved_tracks}</b>${cap}</span>`+
+    `<span>fehlende Songs <b>${result.missing_songs!=null?result.missing_songs:result.missing_tracks}</b></span>`+
+    `<span>Alben aufgelöst <b>${result.resolved_tracks}</b> / offen <b>${result.unresolved_tracks}</b>${cap}</span>`+
     `</div>`,'ok');
-  renderAlbums(lastAlbums);
-  $('.exp-csv',mcard).disabled=!lastAlbums.length;
-  $('.exp-md',mcard).disabled=!lastAlbums.length;
+  $('.tree-search',mcard).style.display=lastGroups.length?'':'none';
+  renderTree();
+  $('.exp-csv',mcard).disabled=!lastGroups.length;
+  $('.exp-md',mcard).disabled=!lastGroups.length;
 }
 
 $('.act-analyze',mcard).onclick=async()=>{
@@ -391,19 +416,58 @@ $('.act-cancel',mcard).onclick=async()=>{
   }catch(e){}
 })();
 
-function renderAlbums(albums){
-  const box=$('.result',mcard);
-  if(!albums.length){box.innerHTML='<p class="muted">Keine fehlenden Alben gefunden 🎉</p>';return;}
-  const rows=albums.slice(0,200).map(a=>
-    `<tr><td>${esc(a.album)}</td><td>${esc(a.artist)}</td>`+
-    `<td class="num">${a.heard_tracks}</td><td class="num">${a.total_plays}</td></tr>`).join('');
-  box.innerHTML=`<table><thead><tr><th>Album</th><th>Artist</th>`+
-    `<th class="num">Gehörte Tracks</th><th class="num">Abspielungen</th></tr></thead><tbody>${rows}</tbody></table>`+
-    (albums.length>200?`<p class="muted">… ${albums.length-200} weitere in den Exporten.</p>`:'');
+function catSelect(artist,current){
+  return `<select class="catsel" data-artist="${escA(artist)}" onclick="event.stopPropagation()">`+
+    CAT_ORDER.map(c=>`<option ${c===current?'selected':''}>${c}</option>`).join('')+`</select>`;
 }
+
+function renderTree(){
+  const box=$('.result',mcard);
+  if(!lastGroups.length){box.innerHTML='<p class="muted">Keine fehlenden Alben gefunden 🎉</p>';return;}
+  const q=($('.tree-search',mcard).value||'').trim().toLowerCase();
+  const cats={};
+  for(const g of lastGroups){
+    let songs=g.songs;
+    if(q){
+      const hit=g.artist.toLowerCase().includes(q)||g.album.toLowerCase().includes(q);
+      if(!hit){ songs=g.songs.filter(s=>s.title.toLowerCase().includes(q)); if(!songs.length) continue; }
+    }
+    const c=effCat(g);
+    (cats[c]=cats[c]||{});
+    (cats[c][g.artist]=cats[c][g.artist]||[]).push({...g,songs});
+  }
+  const catNames=[...CAT_ORDER.filter(c=>cats[c]),...Object.keys(cats).filter(c=>!CAT_ORDER.includes(c))];
+  if(!catNames.length){box.innerHTML='<p class="muted">Nichts gefunden.</p>';return;}
+  let h='<div class="tree">';
+  for(const c of catNames){
+    const arts=cats[c], artNames=Object.keys(arts).sort((a,b)=>sumPlays(arts[b])-sumPlays(arts[a]));
+    const albN=artNames.reduce((n,a)=>n+arts[a].length,0), catP=artNames.reduce((n,a)=>n+sumPlays(arts[a]),0);
+    h+=`<details class="cat" open><summary><span class="name">${esc(c)}</span><span class="count">${artNames.length} Artists · ${albN} Alben · ${catP} ▶</span></summary>`;
+    for(const a of artNames){
+      const gs=arts[a].slice().sort((x,y)=>y.plays-x.plays);
+      h+=`<details class="art"${q?' open':''}><summary><span class="name">${esc(a)}</span>${catSelect(a,c)}<span class="count">${gs.length} Alben · ${sumPlays(gs)} ▶</span></summary>`;
+      for(const g of gs){
+        const badge=g.resolved?'':' <span class="badge">Album unbekannt</span>';
+        h+=`<details class="alb"${q?' open':''}><summary><span class="name">${esc(g.album)}</span>${badge}<span class="count">${g.songs.length} Songs · ${g.plays} ▶</span></summary>`+
+          `<ul class="songs">`+g.songs.map(s=>`<li><span class="name">${esc(s.title)}</span><span class="p">${s.plays} ▶</span></li>`).join('')+`</ul></details>`;
+      }
+      h+='</details>';
+    }
+    h+='</details>';
+  }
+  box.innerHTML=h+'</div>';
+}
+
+$('.tree-search',mcard).addEventListener('input',renderTree);
+$('.result',mcard).addEventListener('change',e=>{
+  const sel=e.target.closest('.catsel'); if(!sel) return;
+  catOverride[sel.dataset.artist]=sel.value; renderTree();
+});
+
+function effectiveGroups(){ return lastGroups.map(g=>({...g,category:effCat(g)})); }
 async function exportList(fmt,filename){
   const r=await fetch(`/api/music/export/${fmt}`,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({albums:lastAlbums})});
+    body:JSON.stringify({groups:effectiveGroups()})});
   const blob=new Blob([await r.text()],{type:'text/plain'});
   const url=URL.createObjectURL(blob); const a=document.createElement('a');
   a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);

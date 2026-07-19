@@ -92,9 +92,11 @@ def test_music_cancel_returns_bool(client):
 
 
 def test_music_exports(client):
-    albums = [{"album": "A", "artist": "B", "heard_tracks": 2, "total_plays": 5, "resolved": True}]
-    assert client.post("/api/music/export/csv", json={"albums": albums}).text.startswith("Album,Artist,")
-    assert "| Album | Artist |" in client.post("/api/music/export/md", json={"albums": albums}).text
+    groups = [{"category": "Musik", "artist": "B", "album": "A", "resolved": True,
+               "plays": 5, "songs": [{"title": "S", "plays": 5}]}]
+    assert client.post("/api/music/export/csv", json={"albums": groups}).text.startswith(
+        "Kategorie,Artist,Album,Song,Abspielungen")
+    assert "# Musik-Einkaufsliste" in client.post("/api/music/export/md", json={"albums": groups}).text
 
 
 def test_missing_header_rejected(monkeypatch):

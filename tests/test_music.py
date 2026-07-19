@@ -5,12 +5,13 @@ from app import config
 from app import music_shopping as m
 
 
-def _entry(title, artist, vid, time="2026-07-15T10:00:00.000Z", header="YouTube Music"):
+def _entry(title, artist, vid, time="2026-07-15T10:00:00.000Z", topic=True):
+    name = f"{artist} - Topic" if topic else artist
     return {
-        "header": header,
+        "header": "YouTube Music",
         "title": title + " angesehen",
         "titleUrl": f"https://music.youtube.com/watch?v={vid}",
-        "subtitles": [{"name": artist + " - Topic"}],
+        "subtitles": [{"name": name}],
         "time": time,
     }
 
@@ -25,11 +26,16 @@ HIST = json.dumps([
 ]).encode()
 
 
+def _seed_cache(mapping):
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (config.DATA_DIR / "ytmusic_album_cache.json").write_text(json.dumps(mapping))
+
+
 def test_aggregate_filters_nonmusic_and_counts():
     plays = m.aggregate_plays(HIST)
-    assert len(plays) == 4  # non-music entry ignored, Anti-Hero deduped
+    assert len(plays) == 4
     ah = next(p for p in plays.values() if p["title"] == "Anti-Hero")
-    assert ah["count"] == 2 and ah["artist"] == "Taylor Swift"
+    assert ah["count"] == 2 and ah["topic"] is True
 
 
 def test_since_drops_old_plays():
@@ -38,39 +44,68 @@ def test_since_drops_old_plays():
     assert "Old Track" not in titles and "Anti-Hero" in titles
 
 
+def _songs(res):
+    return {s["title"] for g in res["groups"] for s in g["songs"]}
+
+
 def test_owned_excluded_from_missing(music_dir):
     music_dir.add("Taylor Swift", "Midnights", "Anti-Hero")
     res = m.analyze(HIST)
-    titles = {t["title"] for a in res["albums"] for t in a["tracks"]}
-    assert "Anti-Hero" not in titles
+    assert "Anti-Hero" not in _songs(res)
     assert res["owned_matches"] >= 1
 
 
 def test_min_plays_filter(music_dir):
-    res = m.analyze(HIST, min_plays=2)
-    assert res["unique_tracks"] == 1  # only Anti-Hero played twice
+    assert m.analyze(HIST, min_plays=2)["unique_tracks"] == 1
 
 
 def test_resolve_off_groups_by_artist(music_dir):
     res = m.analyze(HIST, resolve=False)
+    assert all(g["album"] == m.UNRESOLVED_LABEL for g in res["groups"])
     assert res["resolved_tracks"] == 0
-    assert all(a["album"] == m.UNRESOLVED_LABEL for a in res["albums"])
 
 
 def test_resolve_uses_cache_no_network(music_dir):
-    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    (config.DATA_DIR / "ytmusic_album_cache.json").write_text(
-        json.dumps({"vidX": {"album": "Album A", "artist": "Artist A"}})
-    )
+    _seed_cache({"vidX": {"album": "Album A", "artist": "Artist A"}})
     res = m.analyze(HIST, resolve=True, cap=0)
-    assert "Album A" in {a["album"] for a in res["albums"]}
+    assert "Album A" in {g["album"] for g in res["groups"]}
     assert res["resolved_tracks"] >= 1
+
+
+def test_set_cover_minimises_albums(music_dir):
+    hist = json.dumps([
+        _entry("Dup Song", "Art", "vd1"),   # appears on AlbumX ...
+        _entry("Dup Song", "Art", "vd2"),   # ... and on AlbumY
+        _entry("Solo Song", "Art", "vd3"),  # only on AlbumX
+    ]).encode()
+    _seed_cache({
+        "vd1": {"album": "AlbumX", "artist": "Art"},
+        "vd2": {"album": "AlbumY", "artist": "Art"},
+        "vd3": {"album": "AlbumX", "artist": "Art"},
+    })
+    res = m.analyze(hist, resolve=True, cap=0)
+    # AlbumX covers both songs, so AlbumY is dropped — fewest albums to buy.
+    assert {g["album"] for g in res["groups"]} == {"AlbumX"}
+    x = next(g for g in res["groups"] if g["album"] == "AlbumX")
+    assert len(x["songs"]) == 2
+
+
+def test_categories_topic_vs_other(music_dir):
+    hist = json.dumps([
+        _entry("Music Song", "Bandy", "m1"),                  # "- Topic" → Musik
+        _entry("Pod Ep", "Some Show", "p1", topic=False),     # not Topic → Sonstiges
+    ]).encode()
+    res = m.analyze(hist, resolve=False)
+    cats = {g["category"] for g in res["groups"]}
+    assert "Musik" in cats and "Sonstiges" in cats
+    assert set(res["categories"]) >= {"Musik", "Sonstiges"}
 
 
 def test_exports(music_dir):
     res = m.analyze(HIST, resolve=False)
-    assert m.to_csv(res["albums"]).startswith("Album,Artist,")
-    assert "| Album | Artist |" in m.to_markdown(res["albums"])
+    assert m.to_csv(res["groups"]).startswith("Kategorie,Artist,Album,Song,Abspielungen")
+    md = m.to_markdown(res["groups"])
+    assert md.startswith("# Musik-Einkaufsliste") and "### " in md
 
 
 def test_progress_events(music_dir):

@@ -170,10 +170,14 @@ def music_job_cancel(request: Request, jid: str):
     return {"canceled": jobs.cancel(jid, owner=user)}
 
 
+def _groups(payload: dict) -> list:
+    return payload.get("groups") or payload.get("albums") or []
+
+
 @app.post("/api/music/export/csv")
 def music_export_csv(request: Request, payload: dict = Body(...)):
     _user(request)
-    csv_text = music_shopping.to_csv(payload.get("albums", []))
+    csv_text = music_shopping.to_csv(_groups(payload))
     return PlainTextResponse(
         csv_text,
         media_type="text/csv",
@@ -184,7 +188,7 @@ def music_export_csv(request: Request, payload: dict = Body(...)):
 @app.post("/api/music/export/md")
 def music_export_md(request: Request, payload: dict = Body(...)):
     _user(request)
-    md_text = music_shopping.to_markdown(payload.get("albums", []))
+    md_text = music_shopping.to_markdown(_groups(payload))
     return PlainTextResponse(
         md_text,
         media_type="text/markdown",

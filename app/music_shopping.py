@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 from . import config, library
-from .textnorm import normalize, track_key
+from .textnorm import track_key
 
 # Resolve albums for at most this many missing tracks per run (most-played
 # first). The rest still appear, grouped as unresolved — see UNRESOLVED_LABEL.
@@ -88,16 +88,22 @@ def aggregate_plays(history_bytes: bytes, since: datetime | None = None) -> dict
         subs = entry.get("subtitles") or []
         if not subs:
             continue
-        artist = _clean_artist(subs[0].get("name", ""))
+        raw_name = subs[0].get("name") or ""
+        # Auto-generated "<Artist> - Topic" channels are YT Music "Art Tracks" —
+        # a reliable signal for actual music (vs a podcast/audio-drama channel).
+        topic = raw_name.strip().endswith("- Topic")
+        artist = _clean_artist(raw_name)
         title = _clean_title(entry.get("title", ""))
         if not title:
             continue
         vid = _video_id(entry.get("titleUrl", "")) or ""
         key = vid or track_key(artist, title)
         rec = plays.setdefault(
-            key, {"artist": artist, "title": title, "videoId": vid, "count": 0}
+            key, {"artist": artist, "title": title, "videoId": vid, "count": 0, "topic": topic}
         )
         rec["count"] += 1
+        if topic:
+            rec["topic"] = True
     return plays
 
 
@@ -249,6 +255,7 @@ def analyze_iter(history_bytes: bytes, *, min_plays: int = 1, months: int = 0,
     if resolve:
         _save_cache(cache)
 
+    groups, n_songs = _build_groups(missing)
     result = {
         "type": "music",
         "library_size": library.library_size(),
@@ -256,10 +263,12 @@ def analyze_iter(history_bytes: bytes, *, min_plays: int = 1, months: int = 0,
         "unique_tracks": len(plays),
         "owned_matches": owned_matches,
         "missing_tracks": len(missing),
+        "missing_songs": n_songs,
         "resolved_tracks": resolved,
         "unresolved_tracks": len(missing) - resolved,
         "resolve_cap": cap if (resolve and len(missing) > cap) else None,
-        "albums": _group_albums(missing),
+        "categories": _categories_present(groups),
+        "groups": groups,
     }
     yield {"stage": "done", "message": "fertig", "pct": 100, "result": result}
 
@@ -273,60 +282,114 @@ def analyze(history_bytes: bytes, **opts) -> dict:
     return result
 
 
-def _group_albums(missing: list[dict]) -> list[dict]:
-    groups: dict[tuple[str, str], dict] = {}
+# ---------------------------------------------------------------------------
+# Grouping: songs -> fewest albums (set cover) -> category/artist/album tree
+# ---------------------------------------------------------------------------
+
+CATEGORY_ORDER = ["Musik", "Podcast", "Hörspiel", "Sonstiges"]
+
+
+def _build_groups(missing: list[dict]) -> tuple[list[dict], int]:
+    """Collapse plays to unique songs, then pick the FEWEST albums that cover all
+    songs (greedy set cover) so a song appearing on several albums lands on the
+    album that minimises how many albums we must acquire. Returns (groups,
+    unique_song_count); each group is one album with its per-song play counts."""
+    songs: dict[str, dict] = {}
     for p in missing:
-        album = p.get("album") or UNRESOLVED_LABEL
-        artist = p.get("album_artist") or p["artist"]
-        gkey = (normalize(artist), normalize(album))
-        g = groups.setdefault(
-            gkey,
-            {
-                "album": album,
-                "artist": artist,
-                "heard_tracks": 0,
-                "total_plays": 0,
-                "resolved": p.get("resolved", False),
-                "tracks": [],
-            },
-        )
-        g["heard_tracks"] += 1
-        g["total_plays"] += p["count"]
-        g["tracks"].append({"title": p["title"], "plays": p["count"]})
-    ordered = sorted(
-        groups.values(),
-        key=lambda g: (g["total_plays"], g["heard_tracks"]),
-        reverse=True,
-    )
-    return ordered
+        k = track_key(p["artist"], p["title"])
+        s = songs.get(k)
+        if s is None:
+            s = {"artist": p.get("album_artist") or p["artist"], "title": p["title"],
+                 "plays": 0, "albums": set(), "music": False}
+            songs[k] = s
+        s["plays"] += p["count"]
+        if p.get("topic"):
+            s["music"] = True
+        if p.get("album"):
+            s["albums"].add((p.get("album_artist") or p["artist"], p["album"]))
+
+    album_to_songs: dict[tuple[str, str], set[str]] = {}
+    for k, s in songs.items():
+        for alb in s["albums"]:
+            album_to_songs.setdefault(alb, set()).add(k)
+
+    remaining = {k for k, s in songs.items() if s["albums"]}
+    chosen: dict[tuple[str, str], set[str]] = {}
+    while remaining:
+        best_alb, best_cov, best_score = None, None, None
+        for alb, ks in album_to_songs.items():
+            cov = ks & remaining
+            if not cov:
+                continue
+            score = (len(cov), sum(songs[k]["plays"] for k in cov))
+            if best_score is None or score > best_score:
+                best_alb, best_cov, best_score = alb, cov, score
+        chosen[best_alb] = best_cov
+        remaining -= best_cov
+
+    groups = [_group_entry(a, alb, ks, songs, True) for (a, alb), ks in chosen.items()]
+    # Songs without any resolved album — grouped per artist so none are dropped.
+    leftover: dict[str, set[str]] = {}
+    for k, s in songs.items():
+        if not s["albums"]:
+            leftover.setdefault(s["artist"], set()).add(k)
+    groups += [_group_entry(a, UNRESOLVED_LABEL, ks, songs, False)
+               for a, ks in leftover.items()]
+
+    groups.sort(key=lambda g: g["plays"], reverse=True)
+    return groups, len(songs)
+
+
+def _group_entry(artist, album, keys, songs, resolved) -> dict:
+    slist = sorted(
+        ({"title": songs[k]["title"], "plays": songs[k]["plays"]} for k in keys),
+        key=lambda x: x["plays"], reverse=True)
+    music_votes = sum(1 for k in keys if songs[k]["music"])
+    # Best-effort: "- Topic" art tracks are music; the rest we can't reliably
+    # tell apart from Takeout, so they land in "Sonstiges" for the user to
+    # re-categorise (Musik / Podcast / Hörspiel).
+    category = "Musik" if music_votes * 2 >= len(keys) else "Sonstiges"
+    return {"category": category, "artist": artist, "album": album,
+            "resolved": resolved, "plays": sum(x["plays"] for x in slist), "songs": slist}
+
+
+def _categories_present(groups: list[dict]) -> list[str]:
+    present = {g["category"] for g in groups}
+    return [c for c in CATEGORY_ORDER if c in present] + sorted(present - set(CATEGORY_ORDER))
 
 
 # ---------------------------------------------------------------------------
-# Export
+# Export (operate on the possibly re-categorised groups the client sends back)
 # ---------------------------------------------------------------------------
 
-def to_csv(albums: list[dict]) -> str:
+def to_csv(groups: list[dict]) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["Album", "Artist", "Gehörte Tracks", "Gesamt-Abspielungen", "Aufgelöst"])
-    for a in albums:
-        w.writerow([
-            a["album"], a["artist"], a["heard_tracks"], a["total_plays"],
-            "ja" if a.get("resolved") else "nein",
-        ])
+    w.writerow(["Kategorie", "Artist", "Album", "Song", "Abspielungen"])
+    for g in groups:
+        for s in g.get("songs", []):
+            w.writerow([g.get("category", "Sonstiges"), g["artist"], g["album"],
+                        s["title"], s["plays"]])
     return buf.getvalue()
 
 
-def to_markdown(albums: list[dict]) -> str:
-    lines = [
-        "# Musik-Einkaufsliste (fehlende Alben)",
-        "",
-        "| Album | Artist | Gehörte Tracks | Gesamt-Abspielungen |",
-        "| --- | --- | ---: | ---: |",
-    ]
-    for a in albums:
-        album = a["album"].replace("|", "\\|")
-        artist = a["artist"].replace("|", "\\|")
-        lines.append(f"| {album} | {artist} | {a['heard_tracks']} | {a['total_plays']} |")
-    lines.append("")
+def to_markdown(groups: list[dict]) -> str:
+    by_cat: dict[str, list[dict]] = {}
+    for g in groups:
+        by_cat.setdefault(g.get("category", "Sonstiges"), []).append(g)
+    cats = [c for c in CATEGORY_ORDER if c in by_cat] + \
+           [c for c in by_cat if c not in CATEGORY_ORDER]
+    lines = ["# Musik-Einkaufsliste", ""]
+    for cat in cats:
+        lines.append(f"## {cat}")
+        lines.append("")
+        by_artist: dict[str, list[dict]] = {}
+        for g in by_cat[cat]:
+            by_artist.setdefault(g["artist"], []).append(g)
+        for artist in sorted(by_artist, key=lambda a: sum(x["plays"] for x in by_artist[a]), reverse=True):
+            lines.append(f"### {artist}")
+            for g in sorted(by_artist[artist], key=lambda x: x["plays"], reverse=True):
+                lines.append(f"- **{g['album']}** — {g['plays']} Abspielungen")
+                lines += [f"  - {s['title']} ({s['plays']})" for s in g["songs"]]
+            lines.append("")
     return "\n".join(lines)

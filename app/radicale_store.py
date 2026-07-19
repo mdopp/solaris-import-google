@@ -51,12 +51,27 @@ def _collections_root() -> Path:
 
 @contextlib.contextmanager
 def storage_lock():
-    """Hold Radicale's global storage lock for the duration of the block."""
+    """Hold Radicale's global storage lock for the duration of the block.
+
+    Radicale runs as a different uid than us (its own userns), so its lock file
+    may be foreign-owned. We try O_RDWR (works once the data tree is made
+    world-writable), fall back to O_RDONLY (flock works on a read fd), and as a
+    last resort proceed without the lock rather than failing the whole import.
+    """
     root = _collections_root()
-    root.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        root.mkdir(parents=True, exist_ok=True)
     lock_path = root / ".Radicale.lock"
-    # Create the lock file if Radicale hasn't yet (fresh install).
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    fd = None
+    for flags in (os.O_RDWR | os.O_CREAT, os.O_RDONLY):
+        try:
+            fd = os.open(lock_path, flags, 0o666)
+            break
+        except OSError:
+            continue
+    if fd is None:
+        yield  # best effort — couldn't acquire the lock at all
+        return
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield
@@ -66,17 +81,33 @@ def storage_lock():
         os.close(fd)
 
 
+def _ensure_dir(path: Path) -> None:
+    """Create a dir and make it traversable+writable by any uid.
+
+    Radicale (a different uid) must be able to write into collections we create
+    — add items, rebuild its .Radicale.cache — so we open the perms to 0777.
+    The Radicale data tree is not the shared media tree; loosening perms here is
+    the deliberate trade for keeping imports credential-free (user's choice).
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o777)
+
+
 def _write_props(collection_dir: Path, props: dict) -> None:
     _atomic_write(collection_dir / ".Radicale.props", json.dumps(props))
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(path.parent)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(content)
         os.replace(tmp, path)
+        # World-writable so Radicale (a different uid) can overwrite/delete it.
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o666)
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp)
@@ -85,6 +116,7 @@ def _atomic_write(path: Path, content: str) -> None:
 def ensure_user_root(user: str) -> Path:
     """Ensure ``collection-root/<user>/`` exists as a plain principal collection."""
     root = config.RADICALE_DATA / "collections" / "collection-root" / user
+    _ensure_dir(root)
     if not (root / ".Radicale.props").exists():
         _write_props(root, {})
     return root
@@ -97,6 +129,7 @@ def ensure_collection(user: str, name: str, tag: str, displayname: str | None = 
     """
     ensure_user_root(user)
     coll = config.RADICALE_DATA / "collections" / "collection-root" / user / sanitize_name(name)
+    _ensure_dir(coll)
     props: dict[str, str] = {"tag": tag}
     if displayname:
         props["D:displayname"] = displayname

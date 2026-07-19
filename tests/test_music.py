@@ -148,6 +148,14 @@ def test_hoerspiel_detected_and_not_music(music_dir):
     assert any(g["category"] == "Hörspiel" for g in res["groups"])
 
 
+def test_podcast_from_seed_catalog(music_dir):
+    hist = _hist("Nur der Anfang", "Fest & Flauschig")  # no "Folge N" signal
+    p = list(m.aggregate_plays(hist).values())[0]
+    assert p["podcast"] is True and p["artist"] == "Fest & Flauschig"
+    res = m.analyze(hist, resolve=False)
+    assert any(g["category"] == "Podcast" for g in res["groups"])
+
+
 # --- album resolution is validated (never attach a wrong album) -----------
 
 class _FakeYT:

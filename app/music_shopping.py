@@ -22,7 +22,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
-from . import config, library
+from . import catalog, config, library
 from .textnorm import normalize, track_key
 
 # Trailing video-title noise on non-Topic uploads: "(Official Video)", "[Lyrics]"…
@@ -100,7 +100,7 @@ def _entry_time(entry: dict) -> datetime | None:
         return None
 
 
-def _parse_track(entry: dict, subs: list) -> tuple[str, str, bool, bool] | None:
+def _parse_track(entry: dict, subs: list) -> tuple[str, str, bool, bool, bool] | None:
     """Best-effort (artist, title, is_topic, is_hoerspiel) from a history entry.
 
     - "<Artist> - Topic" channels are YT Music art tracks → clean artist/title.
@@ -114,17 +114,26 @@ def _parse_track(entry: dict, subs: list) -> tuple[str, str, bool, bool] | None:
     title = _clean_title(entry.get("title", ""))
     if not title:
         return None
-    hoerspiel = bool(_HOERSPIEL.search(title)) or "hörspiel" in title.lower()
+    ch_clean = _clean_artist(channel)
+    # Category signal from the shipped seed catalog (matched on the show name).
+    seed = catalog.classify(ch_clean, title)
+    hoerspiel = (bool(_HOERSPIEL.search(title)) or "hörspiel" in title.lower()
+                 or "hörbuch" in title.lower())
+    podcast = False
+    if seed == "Podcast":
+        podcast, hoerspiel = True, False   # a known podcast wins over "Folge N"
+    elif seed == "Hörspiel":
+        hoerspiel = True
     if topic:
-        artist = _clean_artist(channel)
-    elif hoerspiel:
-        artist = _clean_artist(channel)
+        artist = ch_clean
+    elif hoerspiel or podcast:
+        artist = ch_clean                  # keep the show as the "artist"
     elif " - " in title:
         left, right = title.split(" - ", 1)
         artist, title = left.strip(), (_strip_video_tags(right.strip()) or right.strip())
     else:
-        artist, title = _clean_artist(channel), _strip_video_tags(title)
-    return artist, title, topic, hoerspiel
+        artist, title = ch_clean, _strip_video_tags(title)
+    return artist, title, topic, hoerspiel, podcast
 
 
 def aggregate_plays(history_bytes: bytes, since: datetime | None = None) -> dict[str, dict]:
@@ -147,18 +156,20 @@ def aggregate_plays(history_bytes: bytes, since: datetime | None = None) -> dict
         parsed = _parse_track(entry, subs)
         if parsed is None:
             continue
-        artist, title, topic, hoerspiel = parsed
+        artist, title, topic, hoerspiel, podcast = parsed
         vid = _video_id(entry.get("titleUrl", "")) or ""
         key = vid or track_key(artist, title)
         rec = plays.setdefault(key, {
             "artist": artist, "title": title, "videoId": vid, "count": 0,
-            "topic": topic, "hoerspiel": hoerspiel,
+            "topic": topic, "hoerspiel": hoerspiel, "podcast": podcast,
         })
         rec["count"] += 1
         if topic:
             rec["topic"] = True
         if hoerspiel:
             rec["hoerspiel"] = True
+        if podcast:
+            rec["podcast"] = True
     return plays
 
 
@@ -320,8 +331,8 @@ def analyze_iter(history_bytes: bytes, *, min_plays: int = 1, months: int = 0,
         if is_canceled():
             return
         vid = p["videoId"]
-        if not resolve or not vid or p.get("hoerspiel"):
-            # Hörspiel/audiobook chapters aren't music albums — never resolve them.
+        if not resolve or not vid or p.get("hoerspiel") or p.get("podcast"):
+            # Hörspiele/podcasts aren't music albums — never resolve them.
             p["album"], p["album_artist"], p["resolved"] = None, p["artist"], False
         else:
             if vid in cache:
@@ -387,13 +398,16 @@ def _build_groups(missing: list[dict]) -> tuple[list[dict], int]:
         s = songs.get(k)
         if s is None:
             s = {"artist": p.get("album_artist") or p["artist"], "title": p["title"],
-                 "plays": 0, "albums": set(), "music": False, "hoerspiel": False}
+                 "plays": 0, "albums": set(), "music": False,
+                 "hoerspiel": False, "podcast": False}
             songs[k] = s
         s["plays"] += p["count"]
         if p.get("topic"):
             s["music"] = True
         if p.get("hoerspiel"):
             s["hoerspiel"] = True
+        if p.get("podcast"):
+            s["podcast"] = True
         if p.get("album"):
             s["albums"].add((p.get("album_artist") or p["artist"], p["album"]))
 
@@ -438,10 +452,14 @@ def _group_entry(artist, album, keys, songs, resolved) -> dict:
     # "Kapitel/Folge N" → Hörspiel; a "- Topic" art track or a resolved album →
     # Musik; everything else is "Sonstiges" for the user to re-categorise. We
     # can't reliably tell podcast from Hörspiel from Takeout alone.
+    n = len(keys)
     hoer_votes = sum(1 for k in keys if songs[k]["hoerspiel"])
+    pod_votes = sum(1 for k in keys if songs[k]["podcast"])
     music_votes = sum(1 for k in keys if songs[k]["music"] or songs[k]["albums"])
-    if hoer_votes * 2 >= len(keys):
+    if hoer_votes * 2 >= n:
         category = "Hörspiel"
+    elif pod_votes * 2 >= n:
+        category = "Podcast"
     elif music_votes:
         category = "Musik"
     else:

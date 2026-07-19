@@ -4,13 +4,33 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 env:
   IMAGE: ghcr.io/mdopp/solaris-import-google
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements-dev.txt
+
+      - name: Tests + coverage gate (>= 85%)
+        run: pytest --cov=app --cov-report=term-missing --cov-fail-under=85
+
   build-and-push:
+    # The image is only built/pushed if the tests pass. Runs on main / tags, not
+    # on PRs (no push there).
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

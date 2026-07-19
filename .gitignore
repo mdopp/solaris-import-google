@@ -4,3 +4,7 @@ __pycache__/
 testmounts/
 *.egg-info/
 .DS_Store
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/

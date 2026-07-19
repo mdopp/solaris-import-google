@@ -41,16 +41,18 @@ app/
   library.py           # Musik-Scan (mutagen) → owned keys
   music_shopping.py    # Historie → fehlende Alben (ytmusicapi) → CSV/MD
   textnorm.py          # Normalisierung fürs Matching
+  jobs.py              # Durable Job-Runner (langlaufende Analyse, reload-fest)
   main.py              # FastAPI-Routen
   static/index.html    # Web-UI
+tests/                 # pytest-Suite (Unit + API via TestClient)
 Dockerfile
 deploy/servicebay-template/solaris-import-google/   # ServiceBay-Local-Template
 ```
 
-## Lokal entwickeln / testen
+## Lokal entwickeln
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 # Auf eine (Test-)Kopie der echten Datenbäume zeigen und den User simulieren:
 export RADICALE_DATA=./testmounts/radicale/data
@@ -62,6 +64,16 @@ export DEV_FALLBACK_USER=mdopp
 uvicorn app.main:app --reload --port 8097
 # UI: http://localhost:8097  (Header 'Remote-User: mdopp' wird via DEV_FALLBACK_USER simuliert)
 ```
+
+## Tests
+
+```bash
+pytest --cov=app --cov-report=term-missing --cov-fail-under=85
+```
+
+Die CI (`publish.yml`) führt diese Suite als **Gate** aus: das Image wird nur
+gebaut/gepusht, wenn die Tests grün sind und die Coverage ≥ 85 % liegt
+(`build-and-push` → `needs: test`). Aktuell ~90 % über `app/`.
 
 ## Deployment (ServiceBay)
 

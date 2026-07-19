@@ -137,42 +137,79 @@ def _lookup_album(video_id: str) -> tuple[str | None, str | None]:
 # Analysis
 # ---------------------------------------------------------------------------
 
-def analyze(history_bytes: bytes) -> dict:
+def analyze_iter(history_bytes: bytes):
+    """Generator that yields progress events and finally an event carrying the
+    full ``result``. Each event is a dict with ``stage``, ``message``, ``pct``
+    (0-100), and optionally ``done``/``total``. The terminal event also has
+    ``result``. The two slow phases — scanning the library and resolving albums
+    over the network — report incremental progress so the UI can show a real bar.
+    """
+    yield {"stage": "parse", "message": "Historie einlesen …", "pct": 2}
     plays = aggregate_plays(history_bytes)
-    owned = library.owned_keys()
-
     total_plays = sum(p["count"] for p in plays.values())
-    missing = [
-        p for p in plays.values()
-        if track_key(p["artist"], p["title"]) not in owned
-    ]
-    owned_matches = len(plays) - len(missing)
+    yield {
+        "stage": "parse",
+        "message": f"{len(plays)} Songs · {total_plays} Abspielungen",
+        "pct": 8,
+    }
 
-    # Resolve albums for the most-played missing tracks first.
+    # --- library scan (incremental; the slow, Jellyfin-side comparison) -------
+    files = library.list_audio_files()
+    sig = library.signature_of(files)
+    owned = library.cached_keys(sig)
+    if owned is None:
+        owned = set()
+        total = len(files)
+        yield {"stage": "library", "message": f"Bibliothek scannen … 0/{total}",
+               "done": 0, "total": total, "pct": 10}
+        for i, p in enumerate(files, 1):
+            artist, title = library.tags(p)
+            if title:
+                owned.add(track_key(artist, title))
+            if i % 200 == 0 or i == total:
+                yield {"stage": "library", "message": f"Bibliothek scannen … {i}/{total}",
+                       "done": i, "total": total, "pct": 10 + int(20 * i / max(total, 1))}
+        library.set_cache(sig, owned, total)
+    else:
+        library.set_cache(sig, owned, len(files))
+        yield {"stage": "library", "message": f"Bibliothek gecacht ({len(files)} Tracks)",
+               "pct": 30}
+
+    # --- diff -----------------------------------------------------------------
+    missing = [p for p in plays.values()
+               if track_key(p["artist"], p["title"]) not in owned]
+    owned_matches = len(plays) - len(missing)
     missing.sort(key=lambda p: p["count"], reverse=True)
+    yield {"stage": "match", "message": f"{owned_matches} vorhanden · {len(missing)} fehlen",
+           "pct": 32}
+
+    # --- album resolution (network, cached; the longest phase) ----------------
     cache = _load_cache()
     resolved = 0
-    for i, p in enumerate(missing):
+    total_m = len(missing)
+    for i, p in enumerate(missing, 1):
         vid = p["videoId"]
         if not vid:
             p["album"], p["album_artist"], p["resolved"] = None, p["artist"], False
-            continue
-        if vid in cache:
-            album, art = cache[vid].get("album"), cache[vid].get("artist")
-        elif i < MAX_RESOLVE:
-            album, art = _lookup_album(vid)
-            cache[vid] = {"album": album, "artist": art}
         else:
-            album, art = None, None  # over the cap — stays unresolved, not dropped
-        if album:
-            resolved += 1
-        p["album"] = album
-        p["album_artist"] = art or p["artist"]
-        p["resolved"] = bool(album)
+            if vid in cache:
+                album, art = cache[vid].get("album"), cache[vid].get("artist")
+            elif (i - 1) < MAX_RESOLVE:
+                album, art = _lookup_album(vid)
+                cache[vid] = {"album": album, "artist": art}
+            else:
+                album, art = None, None  # over the cap — stays unresolved, not dropped
+            if album:
+                resolved += 1
+            p["album"] = album
+            p["album_artist"] = art or p["artist"]
+            p["resolved"] = bool(album)
+        if i % 10 == 0 or i == total_m:
+            yield {"stage": "resolve", "message": f"Alben auflösen … {i}/{total_m}",
+                   "done": i, "total": total_m, "pct": 32 + int(60 * i / max(total_m, 1))}
     _save_cache(cache)
 
-    albums = _group_albums(missing)
-    return {
+    result = {
         "type": "music",
         "library_size": library.library_size(),
         "history_plays": total_plays,
@@ -182,8 +219,18 @@ def analyze(history_bytes: bytes) -> dict:
         "resolved_tracks": resolved,
         "unresolved_tracks": len(missing) - resolved,
         "resolve_cap": MAX_RESOLVE if len(missing) > MAX_RESOLVE else None,
-        "albums": albums,
+        "albums": _group_albums(missing),
     }
+    yield {"stage": "done", "message": "fertig", "pct": 100, "result": result}
+
+
+def analyze(history_bytes: bytes) -> dict:
+    """Non-streaming convenience wrapper (used by tests)."""
+    result: dict = {}
+    for ev in analyze_iter(history_bytes):
+        if "result" in ev:
+            result = ev["result"]
+    return result
 
 
 def _group_albums(missing: list[dict]) -> list[dict]:

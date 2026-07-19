@@ -2,182 +2,330 @@
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Google-Import → ServiceBay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Google-Import · ServiceBay</title>
 <style>
-  :root { --bg:#0f1115; --card:#1a1e26; --fg:#e6e9ef; --mut:#9aa4b2; --acc:#5b9dff; --ok:#3ecf8e; --err:#ff6b6b; --line:#2a3340; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif; }
-  header { padding:20px 24px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
-  header h1 { font-size:18px; margin:0; }
-  #who { color:var(--mut); font-size:13px; }
-  main { max-width:900px; margin:0 auto; padding:24px; display:grid; gap:20px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
-  .card h2 { margin:0 0 4px; font-size:16px; }
-  .card p.desc { margin:0 0 14px; color:var(--mut); font-size:13px; }
-  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-  input[type=file] { color:var(--mut); font-size:13px; }
-  button { background:#232a35; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:8px 14px; cursor:pointer; font-size:14px; }
-  button.primary { background:var(--acc); border-color:var(--acc); color:#06122b; font-weight:600; }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  .out { margin-top:14px; font-size:13px; white-space:pre-wrap; }
-  .out.ok { color:var(--ok); } .out.err { color:var(--err); }
-  table { width:100%; border-collapse:collapse; margin-top:14px; font-size:13px; }
-  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
-  td.num,th.num { text-align:right; }
-  .stat { display:inline-block; margin-right:16px; color:var(--mut); }
-  .stat b { color:var(--fg); }
-  .muted { color:var(--mut); font-size:12px; }
+  :root{
+    --bg:#0b0e14; --surface:#141922; --elev:#1b2230; --line:#263041;
+    --fg:#e7ecf3; --muted:#8b97a8; --accent:#4c8dff; --accent-ink:#06122b;
+    --ok:#34d399; --err:#f87171; --warn:#fbbf24;
+    --radius:14px; --radius-sm:10px; --gap:18px;
+    --shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:radial-gradient(1200px 600px at 50% -10%, #10233f 0%, var(--bg) 55%) fixed;
+    color:var(--fg); font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased; padding-bottom:48px;
+  }
+  a{color:var(--accent)}
+  .appbar{
+    position:sticky; top:0; z-index:10; backdrop-filter:blur(8px);
+    background:rgba(11,14,20,.72); border-bottom:1px solid var(--line);
+    padding:14px max(16px,env(safe-area-inset-left)) 14px max(16px,env(safe-area-inset-left));
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+  }
+  .brand{display:flex; align-items:center; gap:12px; min-width:0}
+  .logo{width:34px;height:34px;border-radius:9px;flex:0 0 auto;
+    background:linear-gradient(135deg,var(--accent),#7db0ff);
+    display:grid;place-items:center;color:var(--accent-ink);font-weight:800}
+  .brand h1{font-size:16px;margin:0;line-height:1.1;font-weight:700}
+  .brand small{display:block;color:var(--muted);font-size:12px;font-weight:500}
+  .user{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;
+    background:var(--surface);border:1px solid var(--line);border-radius:999px;
+    padding:6px 12px;white-space:nowrap;max-width:52vw;overflow:hidden;text-overflow:ellipsis}
+  .user .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  main{max-width:860px;margin:0 auto;padding:22px max(16px,env(safe-area-inset-left))}
+  .intro{color:var(--muted);font-size:14px;margin:2px 2px 20px}
+  .grid{display:grid;gap:var(--gap)}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    padding:20px;box-shadow:var(--shadow)}
+  .card h2{margin:0 0 4px;font-size:17px;display:flex;align-items:center;gap:9px}
+  .card h2 .ico{width:22px;height:22px;color:var(--accent);flex:0 0 auto}
+  .card .desc{margin:0 0 16px;color:var(--muted);font-size:13.5px}
+  .card code{background:#0d1220;border:1px solid var(--line);border-radius:6px;
+    padding:1px 6px;font-size:12px;color:#b9c6da}
+
+  /* file picker — big, consistent, mobile-friendly */
+  .file{display:flex;align-items:center;gap:12px;width:100%;min-height:56px;cursor:pointer;
+    border:1.5px dashed #33405a;border-radius:var(--radius-sm);background:#0f1520;
+    padding:12px 14px;transition:border-color .15s,background .15s}
+  .file:hover,.file:focus-within{border-color:var(--accent);background:#111a2b}
+  .file.drag{border-color:var(--accent);background:#132139}
+  .file input{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
+  .file .fico{width:26px;height:26px;color:var(--accent);flex:0 0 auto}
+  .file .ftext{min-width:0}
+  .file .fmain{font-weight:600;font-size:14.5px}
+  .file .fsub{color:var(--muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+  button{appearance:none;font:inherit;font-size:15px;font-weight:600;cursor:pointer;
+    border:1px solid var(--line);background:#222c3a;color:var(--fg);
+    border-radius:var(--radius-sm);padding:11px 16px;min-height:46px;
+    display:inline-flex;align-items:center;gap:8px;transition:filter .15s,opacity .15s}
+  button:hover{filter:brightness(1.12)}
+  button:active{filter:brightness(.95)}
+  button.primary{background:linear-gradient(180deg,#5b97ff,#4c8dff);border-color:#4c8dff;color:var(--accent-ink)}
+  button.ghost{background:transparent}
+  button:disabled{opacity:.5;cursor:not-allowed;filter:none}
+  button .spin{width:15px;height:15px;border-radius:50%;border:2px solid rgba(255,255,255,.35);
+    border-top-color:#fff;animation:spin .7s linear infinite;display:none}
+  button.loading .spin{display:inline-block}
+
+  /* progress */
+  .progress{margin-top:14px;display:none}
+  .progress.show{display:block}
+  .ptrack{height:8px;border-radius:999px;background:#0d1220;border:1px solid var(--line);overflow:hidden}
+  .pbar{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,var(--accent),#7db0ff);
+    transition:width .25s ease}
+  .pbar.indet{width:35%;animation:indet 1.1s ease-in-out infinite}
+  .ptext{margin-top:7px;color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums}
+
+  .out{margin-top:14px;font-size:13px;white-space:pre-wrap;line-height:1.5;display:none}
+  .out.show{display:block}
+  .out.ok{color:#bfe9d4} .out.err{color:var(--err)}
+  .out .head{font-weight:700;color:var(--fg);margin-bottom:4px}
+
+  .result{margin-top:14px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+  th,td{text-align:left;padding:8px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  tbody tr:hover{background:#111a2b}
+  .stats{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:12px;color:var(--muted);font-size:13px}
+  .stats b{color:var(--fg);font-variant-numeric:tabular-nums}
+  .muted{color:var(--muted);font-size:12px}
+  .foot{color:var(--muted);font-size:12px;margin-top:22px;text-align:center}
+
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes indet{0%{margin-left:-35%}100%{margin-left:100%}}
+  @media (max-width:560px){
+    .card{padding:16px}
+    .actions{gap:8px}
+    .actions button{flex:1 1 auto;justify-content:center}
+    .user{max-width:44vw}
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>Google-Import → ServiceBay</h1>
-  <div id="who">…</div>
+<header class="appbar">
+  <div class="brand">
+    <div class="logo">↧</div>
+    <div>
+      <h1>Google-Import</h1>
+      <small>ServiceBay · dopp.cloud</small>
+    </div>
+  </div>
+  <div class="user"><span class="dot"></span><span id="who">…</span></div>
 </header>
+
 <main>
+  <p class="intro">Übernimm deine Google-Takeout-Daten in deine Dienste — alles wird für <b id="who2">deinen</b> Account importiert.</p>
+  <div class="grid">
 
-  <section class="card" data-type="calendar">
-    <h2>Kalender</h2>
-    <p class="desc">Google-Takeout <code>Calendar/*.ics</code> → dein Radicale-Kalender (<code>caldav.dopp.cloud</code>).</p>
-    <div class="row">
-      <input type="file" accept=".ics,.ical" class="file">
-      <button class="preview">Vorschau</button>
-      <button class="import primary">Importieren</button>
-    </div>
-    <div class="out"></div>
-  </section>
+    <section class="card" data-type="calendar">
+      <h2><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>Kalender</h2>
+      <p class="desc">Takeout <code>Calendar/*.ics</code> → dein Radicale-Kalender (<code>caldav.dopp.cloud</code>).</p>
+      <label class="file"><input type="file" accept=".ics,.ical">
+        <svg class="fico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16"/></svg>
+        <span class="ftext"><span class="fmain">Datei wählen</span><span class="fsub">.ics — oder hierher ziehen</span></span>
+      </label>
+      <div class="actions">
+        <button class="ghost act-preview"><span class="spin"></span>Vorschau</button>
+        <button class="primary act-import"><span class="spin"></span>Importieren</button>
+      </div>
+      <div class="progress"><div class="ptrack"><div class="pbar"></div></div><div class="ptext"></div></div>
+      <div class="out"></div>
+    </section>
 
-  <section class="card" data-type="contacts">
-    <h2>Kontakte</h2>
-    <p class="desc">Google-Takeout <code>Contacts/*.vcf</code> → dein Adressbuch (CardDAV, <code>&lt;user&gt;/contacts</code>).</p>
-    <div class="row">
-      <input type="file" accept=".vcf" class="file">
-      <button class="preview">Vorschau</button>
-      <button class="import primary">Importieren</button>
-    </div>
-    <div class="out"></div>
-  </section>
+    <section class="card" data-type="contacts">
+      <h2><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-8 0v2"/><circle cx="12" cy="7" r="4"/></svg>Kontakte</h2>
+      <p class="desc">Takeout <code>Contacts/*.vcf</code> → dein Adressbuch (CardDAV, <code>&lt;user&gt;/contacts</code>).</p>
+      <label class="file"><input type="file" accept=".vcf">
+        <svg class="fico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16"/></svg>
+        <span class="ftext"><span class="fmain">Datei wählen</span><span class="fsub">.vcf — oder hierher ziehen</span></span>
+      </label>
+      <div class="actions">
+        <button class="ghost act-preview"><span class="spin"></span>Vorschau</button>
+        <button class="primary act-import"><span class="spin"></span>Importieren</button>
+      </div>
+      <div class="progress"><div class="ptrack"><div class="pbar"></div></div><div class="ptext"></div></div>
+      <div class="out"></div>
+    </section>
 
-  <section class="card" data-type="keep" data-multi="1">
-    <h2>Google Keep — Notizen</h2>
-    <p class="desc">Keep-Ordner als <code>.zip</code> (empfohlen, inkl. Anhänge) oder einzelne <code>.json</code> → dein Notiz-Vault <code>Google Keep/</code>.</p>
-    <div class="row">
-      <input type="file" accept=".zip,.json" class="file" multiple>
-      <button class="preview">Vorschau</button>
-      <button class="import primary">Importieren</button>
-    </div>
-    <div class="out"></div>
-  </section>
+    <section class="card" data-type="keep" data-multi="1">
+      <h2><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v12l-4 4H4z"/><path d="M16 20v-4h4"/></svg>Google Keep — Notizen</h2>
+      <p class="desc">Keep-Ordner als <code>.zip</code> (inkl. Anhänge) oder einzelne <code>.json</code> → dein Notiz-Vault <code>Google Keep/</code>.</p>
+      <label class="file"><input type="file" accept=".zip,.json" multiple>
+        <svg class="fico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16"/></svg>
+        <span class="ftext"><span class="fmain">Dateien wählen</span><span class="fsub">.zip / .json — oder hierher ziehen</span></span>
+      </label>
+      <div class="actions">
+        <button class="ghost act-preview"><span class="spin"></span>Vorschau</button>
+        <button class="primary act-import"><span class="spin"></span>Importieren</button>
+      </div>
+      <div class="progress"><div class="ptrack"><div class="pbar"></div></div><div class="ptext"></div></div>
+      <div class="out"></div>
+    </section>
 
-  <section class="card" data-type="music">
-    <h2>Musik-Einkaufsliste</h2>
-    <p class="desc">YouTube-Music <code>history/watch-history.json</code> → Abgleich mit deiner Jellyfin-Bibliothek → Liste fehlender Alben nach Häufigkeit.</p>
-    <div class="row">
-      <input type="file" accept=".json" class="file">
-      <button class="analyze primary">Analysieren</button>
-      <button class="exp-csv" disabled>CSV export</button>
-      <button class="exp-md" disabled>Markdown export</button>
-    </div>
-    <div class="out"></div>
-    <div class="result"></div>
-  </section>
+    <section class="card" data-type="music">
+      <h2><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>Musik-Einkaufsliste</h2>
+      <p class="desc">YouTube-Music <code>history/watch-history.json</code> → Abgleich mit deiner Jellyfin-Bibliothek → fehlende Alben nach Häufigkeit.</p>
+      <label class="file"><input type="file" accept=".json">
+        <svg class="fico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16"/></svg>
+        <span class="ftext"><span class="fmain">Datei wählen</span><span class="fsub">watch-history.json — oder hierher ziehen</span></span>
+      </label>
+      <div class="actions">
+        <button class="primary act-analyze"><span class="spin"></span>Analysieren</button>
+        <button class="ghost exp-csv" disabled>CSV export</button>
+        <button class="ghost exp-md" disabled>Markdown export</button>
+      </div>
+      <div class="progress"><div class="ptrack"><div class="pbar"></div></div><div class="ptext"></div></div>
+      <div class="out"></div>
+      <div class="result"></div>
+    </section>
 
-  <p class="muted">Angemeldet via Authelia — es wird ausschließlich für deinen eingeloggten Benutzer importiert.</p>
+  </div>
+  <p class="foot">Angemeldet via Authelia — Import ausschließlich für deinen eingeloggten Benutzer.</p>
 </main>
 
 <script>
-const $ = (sel, el=document) => el.querySelector(sel);
+const $=(s,e=document)=>e.querySelector(s);
+const esc=s=>(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 fetch('/api/whoami').then(r=>r.json()).then(d=>{
-  $('#who').textContent = d.user ? ('Benutzer: ' + d.user) : 'nicht angemeldet';
-}).catch(()=>{ $('#who').textContent = 'nicht angemeldet'; });
+  const u=d.user||'nicht angemeldet';
+  $('#who').textContent=u; if($('#who2'))$('#who2').textContent=u;
+}).catch(()=>{$('#who').textContent='nicht angemeldet';});
 
-function setOut(card, msg, cls='') {
-  const out = $('.out', card); out.className = 'out ' + cls; out.textContent = msg;
-}
-
-function fileForm(card, multi) {
-  const input = $('.file', card);
-  if (!input.files.length) { setOut(card, 'Bitte zuerst eine Datei wählen.', 'err'); return null; }
-  const fd = new FormData();
-  if (multi) { for (const f of input.files) fd.append('files', f); }
-  else { fd.append('file', input.files[0]); }
-  return fd;
-}
-
-async function callEndpoint(card, path, multi) {
-  const fd = fileForm(card, multi); if (!fd) return null;
-  setOut(card, '… läuft', '');
-  const r = await fetch(path, { method:'POST', body: fd });
-  const d = await r.json();
-  if (!r.ok || d.error) { setOut(card, 'Fehler: ' + (d.error || d.detail || r.status), 'err'); return null; }
-  return d;
-}
-
-function fmtGeneric(d) {
-  return Object.entries(d).filter(([k])=>k!=='type')
-    .map(([k,v]) => `${k}: ${v}`).join('\n');
-}
-
-document.querySelectorAll('.card[data-type]').forEach(card => {
-  const type = card.dataset.type;
-  const multi = card.dataset.multi === '1';
-  const prev = $('.preview', card), imp = $('.import', card);
-
-  if (prev) prev.onclick = async () => {
-    const d = await callEndpoint(card, `/api/${type}/preview`, multi);
-    if (d) setOut(card, 'Vorschau:\n' + fmtGeneric(d), 'ok');
+// ---- file picker wiring (label + drag/drop) ----
+document.querySelectorAll('.card .file').forEach(lab=>{
+  const input=$('input',lab), main=$('.fmain',lab), sub=$('.fsub',lab);
+  const orig=sub.textContent;
+  const render=()=>{
+    const fs=input.files;
+    if(!fs||!fs.length){main.textContent=input.multiple?'Dateien wählen':'Datei wählen';sub.textContent=orig;return;}
+    if(fs.length===1){main.textContent=fs[0].name;sub.textContent=(fs[0].size/1024|0)+' KB';}
+    else{main.textContent=fs.length+' Dateien';sub.textContent=[...fs].map(f=>f.name).join(', ');}
   };
-  if (imp) imp.onclick = async () => {
-    const d = await callEndpoint(card, `/api/${type}/import`, multi);
-    if (d) setOut(card, 'Importiert:\n' + fmtGeneric(d), 'ok');
-  };
+  input.addEventListener('change',render);
+  ['dragenter','dragover'].forEach(ev=>lab.addEventListener(ev,e=>{e.preventDefault();lab.classList.add('drag');}));
+  ['dragleave','drop'].forEach(ev=>lab.addEventListener(ev,e=>{e.preventDefault();lab.classList.remove('drag');}));
+  lab.addEventListener('drop',e=>{if(e.dataTransfer.files.length){input.files=e.dataTransfer.files;render();}});
 });
 
-// --- music ---
-const mcard = document.querySelector('.card[data-type="music"]');
-let lastAlbums = [];
-$('.analyze', mcard).onclick = async () => {
-  const d = await callEndpoint(mcard, '/api/music/analyze', false);
-  if (!d) return;
-  lastAlbums = d.albums || [];
-  const cap = d.resolve_cap ? ` (Album-Auflösung auf Top ${d.resolve_cap} begrenzt)` : '';
-  setOut(mcard,
-    `Bibliothek: ${d.library_size} Tracks · Historie: ${d.history_plays} Abspielungen, ` +
-    `${d.unique_tracks} Songs · schon vorhanden: ${d.owned_matches} · fehlend: ${d.missing_tracks} ` +
-    `(aufgelöst ${d.resolved_tracks}, offen ${d.unresolved_tracks})${cap}`, 'ok');
-  renderAlbums(mcard, lastAlbums);
-  $('.exp-csv', mcard).disabled = lastAlbums.length === 0;
-  $('.exp-md', mcard).disabled = lastAlbums.length === 0;
+// ---- helpers ----
+function setBusy(card,on){
+  card.querySelectorAll('button').forEach(b=>{b.disabled=on&&!b.classList.contains('_keep');});
+  card.querySelectorAll('button.loading').forEach(b=>b.classList.remove('loading'));
+}
+function showProgress(card,{indet=false,pct=0,text=''}={}){
+  const p=$('.progress',card),bar=$('.pbar',card);
+  p.classList.add('show');
+  bar.classList.toggle('indet',indet);
+  if(!indet)bar.style.width=(pct||0)+'%';
+  $('.ptext',card).textContent=text;
+}
+function hideProgress(card){$('.progress',card).classList.remove('show');}
+function showOut(card,html,cls){const o=$('.out',card);o.className='out show '+(cls||'');o.innerHTML=html;}
+function fdFor(card){
+  const input=$('.file input',card), multi=card.dataset.multi==='1';
+  if(!input.files.length){showOut(card,'Bitte zuerst eine Datei wählen.','err');return null;}
+  const fd=new FormData();
+  if(multi)[...input.files].forEach(f=>fd.append('files',f));
+  else fd.append('file',input.files[0]);
+  return fd;
+}
+function fmtReport(d){
+  const labels={calendar_name:'Kalender',objects:'Objekte',items:'Einträge',written:'Geschrieben',
+    timezones:'Zeitzonen',cards:'Kontakte',notes:'Notizen',trashed_skipped:'Papierkorb übersprungen',
+    attachments:'Anhänge',attachments_copied:'Anhänge kopiert',attachments_missing:'Anhänge fehlen',
+    target:'Ziel'};
+  return Object.entries(d).filter(([k])=>k!=='type'&&k!=='samples')
+    .map(([k,v])=>`<div>${labels[k]||k}: <b>${esc(String(v))}</b></div>`).join('');
+}
+
+// ---- generic import cards ----
+document.querySelectorAll('.card[data-type]:not([data-type="music"])').forEach(card=>{
+  const type=card.dataset.type;
+  const run=async(action,btn)=>{
+    const fd=fdFor(card); if(!fd)return;
+    btn.classList.add('loading'); setBusy(card,true);
+    showProgress(card,{indet:true,text:action==='preview'?'Vorschau wird erstellt …':'Import läuft …'});
+    try{
+      const r=await fetch(`/api/${type}/${action}`,{method:'POST',body:fd});
+      const d=await r.json();
+      if(!r.ok||d.error){showOut(card,'Fehler: '+esc(d.error||d.detail||r.status),'err');}
+      else{showOut(card,`<div class="head">${action==='preview'?'Vorschau':'Importiert ✓'}</div>${fmtReport(d)}`,'ok');}
+    }catch(e){showOut(card,'Fehler: '+esc(e.message),'err');}
+    finally{hideProgress(card);setBusy(card,false);}
+  };
+  $('.act-preview',card).onclick=e=>run('preview',e.currentTarget);
+  $('.act-import',card).onclick=e=>run('import',e.currentTarget);
+});
+
+// ---- music: streaming analyze ----
+const mcard=$('.card[data-type="music"]');
+let lastAlbums=[];
+$('.act-analyze',mcard).onclick=async e=>{
+  const btn=e.currentTarget, fd=fdFor(mcard); if(!fd)return;
+  btn.classList.add('loading'); setBusy(mcard,true);
+  $('.result',mcard).innerHTML=''; $('.out',mcard).className='out';
+  showProgress(mcard,{pct:0,text:'Starte …'});
+  let result=null, errored=false;
+  try{
+    const r=await fetch('/api/music/analyze/stream',{method:'POST',body:fd});
+    const reader=r.body.getReader(), dec=new TextDecoder(); let buf='';
+    while(true){
+      const {value,done}=await reader.read(); if(done)break;
+      buf+=dec.decode(value,{stream:true}); let i;
+      while((i=buf.indexOf('\n'))>=0){
+        const line=buf.slice(0,i).trim(); buf=buf.slice(i+1); if(!line)continue;
+        const ev=JSON.parse(line);
+        if(ev.stage==='error'){errored=true;showOut(mcard,'Fehler: '+esc(ev.error),'err');}
+        else showProgress(mcard,{pct:ev.pct||0,text:ev.message||''});
+        if(ev.result)result=ev.result;
+      }
+    }
+  }catch(e){errored=true;showOut(mcard,'Fehler: '+esc(e.message),'err');}
+  hideProgress(mcard); setBusy(mcard,false);
+  if(errored||!result)return;
+  lastAlbums=result.albums||[];
+  const cap=result.resolve_cap?` · Album-Auflösung auf Top ${result.resolve_cap} begrenzt`:'';
+  showOut(mcard,
+    `<div class="stats">`+
+    `<span>Bibliothek <b>${result.library_size}</b></span>`+
+    `<span>Historie <b>${result.history_plays}</b> Abspielungen</span>`+
+    `<span><b>${result.unique_tracks}</b> Songs</span>`+
+    `<span>schon vorhanden <b>${result.owned_matches}</b></span>`+
+    `<span>fehlen <b>${result.missing_tracks}</b></span>`+
+    `<span>aufgelöst <b>${result.resolved_tracks}</b> / offen <b>${result.unresolved_tracks}</b>${cap}</span>`+
+    `</div>`,'ok');
+  renderAlbums(lastAlbums);
+  $('.exp-csv',mcard).disabled=!lastAlbums.length;
+  $('.exp-md',mcard).disabled=!lastAlbums.length;
 };
 
-function renderAlbums(card, albums) {
-  const box = $('.result', card);
-  if (!albums.length) { box.innerHTML = '<p class="muted">Keine fehlenden Alben gefunden.</p>'; return; }
-  const rows = albums.slice(0, 200).map(a =>
-    `<tr><td>${esc(a.album)}</td><td>${esc(a.artist)}</td>` +
+function renderAlbums(albums){
+  const box=$('.result',mcard);
+  if(!albums.length){box.innerHTML='<p class="muted">Keine fehlenden Alben gefunden 🎉</p>';return;}
+  const rows=albums.slice(0,200).map(a=>
+    `<tr><td>${esc(a.album)}</td><td>${esc(a.artist)}</td>`+
     `<td class="num">${a.heard_tracks}</td><td class="num">${a.total_plays}</td></tr>`).join('');
-  box.innerHTML = `<table><thead><tr><th>Album</th><th>Artist</th>` +
-    `<th class="num">Gehörte Tracks</th><th class="num">Abspielungen</th></tr></thead><tbody>${rows}</tbody></table>` +
-    (albums.length > 200 ? `<p class="muted">… ${albums.length-200} weitere in den Exporten.</p>` : '');
+  box.innerHTML=`<table><thead><tr><th>Album</th><th>Artist</th>`+
+    `<th class="num">Gehörte Tracks</th><th class="num">Abspielungen</th></tr></thead><tbody>${rows}</tbody></table>`+
+    (albums.length>200?`<p class="muted">… ${albums.length-200} weitere in den Exporten.</p>`:'');
 }
-
-function esc(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-
-async function exportList(fmt, filename) {
-  const r = await fetch(`/api/music/export/${fmt}`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ albums: lastAlbums })
-  });
-  const text = await r.text();
-  const blob = new Blob([text], {type:'text/plain'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+async function exportList(fmt,filename){
+  const r=await fetch(`/api/music/export/${fmt}`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({albums:lastAlbums})});
+  const blob=new Blob([await r.text()],{type:'text/plain'});
+  const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);
 }
-$('.exp-csv', mcard).onclick = () => exportList('csv', 'einkaufsliste.csv');
-$('.exp-md', mcard).onclick = () => exportList('md', 'einkaufsliste.md');
+$('.exp-csv',mcard).onclick=()=>exportList('csv','einkaufsliste.csv');
+$('.exp-md',mcard).onclick=()=>exportList('md','einkaufsliste.md');
 </script>
 </body>
 </html>

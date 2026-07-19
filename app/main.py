@@ -7,10 +7,16 @@ POSTs uploaded Takeout files to the per-type endpoints below.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 
 from . import __version__, identity, music_shopping
 from .importers import calendar as cal_importer
@@ -105,6 +111,23 @@ async def music_analyze(request: Request, file: UploadFile = File(...)):
     _user(request)
     _, data = await _one_file(file)
     return _safe(lambda: music_shopping.analyze(data))
+
+
+@app.post("/api/music/analyze/stream")
+async def music_analyze_stream(request: Request, file: UploadFile = File(...)):
+    """Stream analysis progress as newline-delimited JSON so the UI can show a
+    real progress bar during the slow library-scan + album-resolution phases."""
+    _user(request)
+    _, data = await _one_file(file)
+
+    def gen():
+        try:
+            for ev in music_shopping.analyze_iter(data):
+                yield json.dumps(ev, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001 — surface as a final error line
+            yield json.dumps({"stage": "error", "error": f"{type(exc).__name__}: {exc}"}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @app.post("/api/music/export/csv")

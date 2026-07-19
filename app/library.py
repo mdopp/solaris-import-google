@@ -3,8 +3,9 @@ owns — no Jellyfin login needed (Jellyfin mounts the very same tree read-only)
 
 Builds a set of normalized ``(artist, title)`` keys from audio tags, falling
 back to the ``Artist/Album/Track`` folder layout when a file is untagged. The
-result is cached in-process and invalidated when the library's file count or
-newest mtime changes.
+result is cached in-process and invalidated when the library's file set changes.
+Scanning thousands of files is slow, so the scan is driven file-by-file by the
+caller (``music_shopping``) which reports progress.
 """
 
 from __future__ import annotations
@@ -23,21 +24,42 @@ _AUDIO_EXTS = {
 _cache: dict = {"sig": None, "keys": set(), "count": 0}
 
 
-def _signature(root: Path) -> tuple[int, float]:
-    count = 0
-    newest = 0.0
+def list_audio_files() -> list[Path]:
+    """All audio files under the library root (one walk)."""
+    root = config.MUSIC_DIR
+    if not root.exists():
+        return []
+    out: list[Path] = []
     for dirpath, _dirs, files in os.walk(root):
         for f in files:
             if os.path.splitext(f)[1].lower() in _AUDIO_EXTS:
-                count += 1
-                try:
-                    newest = max(newest, os.path.getmtime(os.path.join(dirpath, f)))
-                except OSError:
-                    pass
-    return count, newest
+                out.append(Path(dirpath) / f)
+    return out
 
 
-def _tags(path: Path) -> tuple[str, str]:
+def signature_of(files: list[Path]) -> tuple[int, float]:
+    """A cheap invalidation signature (file count + newest mtime)."""
+    newest = 0.0
+    for p in files:
+        try:
+            newest = max(newest, p.stat().st_mtime)
+        except OSError:
+            pass
+    return len(files), newest
+
+
+def cached_keys(sig: tuple[int, float]) -> set[str] | None:
+    """Return the cached owned-key set if the signature still matches."""
+    if _cache["sig"] == sig:
+        return _cache["keys"]
+    return None
+
+
+def set_cache(sig: tuple[int, float], keys: set[str], count: int) -> None:
+    _cache.update({"sig": sig, "keys": keys, "count": count})
+
+
+def tags(path: Path) -> tuple[str, str]:
     """Return (artist, title) from tags, or from the path as a fallback."""
     try:
         import mutagen
@@ -51,10 +73,12 @@ def _tags(path: Path) -> tuple[str, str]:
     except Exception:
         pass
     # Fallback: <library>/<artist>/<album>/<track>.<ext>
-    parts = path.relative_to(config.MUSIC_DIR).parts
+    try:
+        parts = path.relative_to(config.MUSIC_DIR).parts
+    except ValueError:
+        parts = path.parts
     artist = parts[0] if len(parts) >= 2 else ""
     title = os.path.splitext(path.name)[0]
-    # Strip a leading track number like "03 - " or "03 ".
     for sep in (" - ", " "):
         if title[:2].isdigit() and sep in title:
             title = title.split(sep, 1)[1]
@@ -63,29 +87,16 @@ def _tags(path: Path) -> tuple[str, str]:
 
 
 def owned_keys() -> set[str]:
-    """Set of normalized track keys currently in the library (cached)."""
-    root = config.MUSIC_DIR
-    if not root.exists():
-        return set()
-    sig = _signature(root)
-    if _cache["sig"] == sig:
-        return _cache["keys"]
-
-    keys: set[str] = set()
-    count = 0
-    for dirpath, _dirs, files in os.walk(root):
-        for f in files:
-            if os.path.splitext(f)[1].lower() not in _AUDIO_EXTS:
-                continue
-            count += 1
-            artist, title = _tags(Path(dirpath) / f)
-            if title:
-                keys.add(track_key(artist, title))
-
-    _cache.update({"sig": sig, "keys": keys, "count": count})
+    """Non-streaming convenience: full owned-key set (used by tests)."""
+    files = list_audio_files()
+    sig = signature_of(files)
+    cached = cached_keys(sig)
+    if cached is not None:
+        return cached
+    keys = {track_key(*tags(p)) for p in files if tags(p)[1]}
+    set_cache(sig, keys, len(files))
     return keys
 
 
 def library_size() -> int:
-    owned_keys()
-    return _cache["count"]
+    return _cache.get("count", 0)

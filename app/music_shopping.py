@@ -18,6 +18,7 @@ import csv
 import io
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 from . import config, library
@@ -60,13 +61,30 @@ def _video_id(url: str) -> str | None:
         return None
 
 
-def aggregate_plays(history_bytes: bytes) -> dict[str, dict]:
-    """Return videoId(or synthetic key) -> {artist, title, videoId, count}."""
+def _entry_time(entry: dict) -> datetime | None:
+    ts = entry.get("time")
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def aggregate_plays(history_bytes: bytes, since: datetime | None = None) -> dict[str, dict]:
+    """Return videoId(or synthetic key) -> {artist, title, videoId, count}.
+
+    ``since`` (if given) drops plays older than that timestamp.
+    """
     data = json.loads(history_bytes)
     plays: dict[str, dict] = {}
     for entry in data:
         if entry.get("header") != "YouTube Music":
             continue
+        if since is not None:
+            t = _entry_time(entry)
+            if t is not None and t < since:
+                continue
         subs = entry.get("subtitles") or []
         if not subs:
             continue
@@ -137,21 +155,38 @@ def _lookup_album(video_id: str) -> tuple[str | None, str | None]:
 # Analysis
 # ---------------------------------------------------------------------------
 
-def analyze_iter(history_bytes: bytes):
-    """Generator that yields progress events and finally an event carrying the
-    full ``result``. Each event is a dict with ``stage``, ``message``, ``pct``
-    (0-100), and optionally ``done``/``total``. The terminal event also has
-    ``result``. The two slow phases — scanning the library and resolving albums
-    over the network — report incremental progress so the UI can show a real bar.
+def analyze_iter(history_bytes: bytes, *, min_plays: int = 1, months: int = 0,
+                 resolve: bool = True, cap: int | None = None, is_canceled=None):
+    """Generator yielding progress events, terminating with one carrying the full
+    ``result``. Upfront options bound the runtime (the caller collects them from
+    the user before starting), so we don't spend minutes/hours on unwanted work:
+
+    - ``min_plays``  — ignore tracks played fewer than this many times.
+    - ``months``     — only consider plays from the last N months (0 = all).
+    - ``resolve``    — resolve albums via YouTube Music (slow); if False, group by
+      artist instantly.
+    - ``cap``        — resolve at most this many missing tracks (most-played first).
+    - ``is_canceled``— polled between items so a user cancel stops promptly.
     """
+    is_canceled = is_canceled or (lambda: False)
+    cap = MAX_RESOLVE if cap is None else cap
+    since = None
+    if months and months > 0:
+        since = datetime.now(timezone.utc) - timedelta(days=30 * months)
+
     yield {"stage": "parse", "message": "Historie einlesen …", "pct": 2}
-    plays = aggregate_plays(history_bytes)
+    plays = aggregate_plays(history_bytes, since=since)
+    if min_plays and min_plays > 1:
+        plays = {k: v for k, v in plays.items() if v["count"] >= min_plays}
     total_plays = sum(p["count"] for p in plays.values())
-    yield {
-        "stage": "parse",
-        "message": f"{len(plays)} Songs · {total_plays} Abspielungen",
-        "pct": 8,
-    }
+    scope = []
+    if min_plays > 1:
+        scope.append(f"≥{min_plays}×")
+    if months:
+        scope.append(f"letzte {months} Mon.")
+    scope_txt = f" ({', '.join(scope)})" if scope else ""
+    yield {"stage": "parse",
+           "message": f"{len(plays)} Songs · {total_plays} Abspielungen{scope_txt}", "pct": 8}
 
     # --- library scan (incremental; the slow, Jellyfin-side comparison) -------
     files = library.list_audio_files()
@@ -163,6 +198,8 @@ def analyze_iter(history_bytes: bytes):
         yield {"stage": "library", "message": f"Bibliothek scannen … 0/{total}",
                "done": 0, "total": total, "pct": 10}
         for i, p in enumerate(files, 1):
+            if is_canceled():
+                return
             artist, title = library.tags(p)
             if title:
                 owned.add(track_key(artist, title))
@@ -188,13 +225,15 @@ def analyze_iter(history_bytes: bytes):
     resolved = 0
     total_m = len(missing)
     for i, p in enumerate(missing, 1):
+        if is_canceled():
+            return
         vid = p["videoId"]
-        if not vid:
+        if not resolve or not vid:
             p["album"], p["album_artist"], p["resolved"] = None, p["artist"], False
         else:
             if vid in cache:
                 album, art = cache[vid].get("album"), cache[vid].get("artist")
-            elif (i - 1) < MAX_RESOLVE:
+            elif (i - 1) < cap:
                 album, art = _lookup_album(vid)
                 cache[vid] = {"album": album, "artist": art}
             else:
@@ -207,7 +246,8 @@ def analyze_iter(history_bytes: bytes):
         if i % 10 == 0 or i == total_m:
             yield {"stage": "resolve", "message": f"Alben auflösen … {i}/{total_m}",
                    "done": i, "total": total_m, "pct": 32 + int(60 * i / max(total_m, 1))}
-    _save_cache(cache)
+    if resolve:
+        _save_cache(cache)
 
     result = {
         "type": "music",
@@ -218,16 +258,16 @@ def analyze_iter(history_bytes: bytes):
         "missing_tracks": len(missing),
         "resolved_tracks": resolved,
         "unresolved_tracks": len(missing) - resolved,
-        "resolve_cap": MAX_RESOLVE if len(missing) > MAX_RESOLVE else None,
+        "resolve_cap": cap if (resolve and len(missing) > cap) else None,
         "albums": _group_albums(missing),
     }
     yield {"stage": "done", "message": "fertig", "pct": 100, "result": result}
 
 
-def analyze(history_bytes: bytes) -> dict:
+def analyze(history_bytes: bytes, **opts) -> dict:
     """Non-streaming convenience wrapper (used by tests)."""
     result: dict = {}
-    for ev in analyze_iter(history_bytes):
+    for ev in analyze_iter(history_bytes, **opts):
         if "result" in ev:
             result = ev["result"]
     return result

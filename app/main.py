@@ -7,18 +7,12 @@ POSTs uploaded Takeout files to the per-type endpoints below.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import (
-    FileResponse,
-    JSONResponse,
-    PlainTextResponse,
-    StreamingResponse,
-)
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
-from . import __version__, identity, music_shopping
+from . import __version__, identity, jobs, music_shopping
 from .importers import calendar as cal_importer
 from .importers import contacts as contacts_importer
 from .importers import keep as keep_importer
@@ -107,27 +101,43 @@ async def keep_import(request: Request, files: list[UploadFile] = File(...)):
 # --- music shopping list --------------------------------------------------
 
 @app.post("/api/music/analyze")
-async def music_analyze(request: Request, file: UploadFile = File(...)):
+async def music_analyze(
+    request: Request,
+    file: UploadFile = File(...),
+    min_plays: int = Form(1),
+    months: int = Form(0),
+    resolve: bool = Form(True),
+    cap: int = Form(400),
+):
+    """Start a durable analysis job and return its id. The heavy work (library
+    scan + album resolution) runs server-side in a background thread so it
+    survives a page reload; the client polls /api/music/job/{id}. Upfront options
+    bound the runtime."""
     _user(request)
     _, data = await _one_file(file)
-    return _safe(lambda: music_shopping.analyze(data))
+
+    def factory(is_canceled):
+        return music_shopping.analyze_iter(
+            data, min_plays=min_plays, months=months, resolve=resolve,
+            cap=cap, is_canceled=is_canceled,
+        )
+
+    return {"jobId": jobs.start(factory)}
 
 
-@app.post("/api/music/analyze/stream")
-async def music_analyze_stream(request: Request, file: UploadFile = File(...)):
-    """Stream analysis progress as newline-delimited JSON so the UI can show a
-    real progress bar during the slow library-scan + album-resolution phases."""
+@app.get("/api/music/job/{jid}")
+def music_job(request: Request, jid: str):
     _user(request)
-    _, data = await _one_file(file)
+    st = jobs.get(jid)
+    if not st:
+        raise HTTPException(status_code=404, detail="unbekannter Job")
+    return st
 
-    def gen():
-        try:
-            for ev in music_shopping.analyze_iter(data):
-                yield json.dumps(ev, ensure_ascii=False) + "\n"
-        except Exception as exc:  # noqa: BLE001 — surface as a final error line
-            yield json.dumps({"stage": "error", "error": f"{type(exc).__name__}: {exc}"}) + "\n"
 
-    return StreamingResponse(gen(), media_type="application/x-ndjson")
+@app.post("/api/music/job/{jid}/cancel")
+def music_job_cancel(request: Request, jid: str):
+    _user(request)
+    return {"canceled": jobs.cancel(jid)}
 
 
 @app.post("/api/music/export/csv")

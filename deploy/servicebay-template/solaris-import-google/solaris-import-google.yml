@@ -23,10 +23,12 @@ metadata:
     # media pod documents (#1731).
     io.podman.annotations.label/import: "disable"
 spec:
-  # hostNetwork so NPM (also hostNetwork) reaches the app on the host port and
-  # the app can be fronted by Authelia. The app rejects any request lacking the
-  # Authelia Remote-User header, so a direct LAN hit can't bypass SSO.
-  hostNetwork: true
+  # ADR-0007: isolated network namespace (no hostNetwork). The app reaches no
+  # on-box service on loopback — it only writes mounted filesystems and calls out
+  # to YouTube Music — so it publishes its port via hostPort and stays isolated
+  # from the host's other service ports. NPM (hostNetwork) proxies to it on the
+  # host port; the app still requires the Authelia Remote-User header, so a direct
+  # LAN hit can't bypass SSO.
   restartPolicy: Always
   containers:
   - name: import
@@ -51,6 +53,7 @@ spec:
       value: "{{PUBLIC_DOMAIN}}"
     ports:
     - containerPort: {{IMPORT_PORT}}
+      hostPort: {{IMPORT_PORT}}
     volumeMounts:
     - mountPath: /radicale
       name: radicale-data

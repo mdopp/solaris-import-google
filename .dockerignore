@@ -1,0 +1,8 @@
+.git
+__pycache__/
+*.pyc
+testmounts/
+scripts/
+deploy/
+.github/
+README.md

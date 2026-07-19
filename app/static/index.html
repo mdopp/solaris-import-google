@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Google-Import → ServiceBay</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1e26; --fg:#e6e9ef; --mut:#9aa4b2; --acc:#5b9dff; --ok:#3ecf8e; --err:#ff6b6b; --line:#2a3340; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif; }
+  header { padding:20px 24px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+  header h1 { font-size:18px; margin:0; }
+  #who { color:var(--mut); font-size:13px; }
+  main { max-width:900px; margin:0 auto; padding:24px; display:grid; gap:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
+  .card h2 { margin:0 0 4px; font-size:16px; }
+  .card p.desc { margin:0 0 14px; color:var(--mut); font-size:13px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  input[type=file] { color:var(--mut); font-size:13px; }
+  button { background:#232a35; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:8px 14px; cursor:pointer; font-size:14px; }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#06122b; font-weight:600; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .out { margin-top:14px; font-size:13px; white-space:pre-wrap; }
+  .out.ok { color:var(--ok); } .out.err { color:var(--err); }
+  table { width:100%; border-collapse:collapse; margin-top:14px; font-size:13px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  td.num,th.num { text-align:right; }
+  .stat { display:inline-block; margin-right:16px; color:var(--mut); }
+  .stat b { color:var(--fg); }
+  .muted { color:var(--mut); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Google-Import → ServiceBay</h1>
+  <div id="who">…</div>
+</header>
+<main>
+
+  <section class="card" data-type="calendar">
+    <h2>Kalender</h2>
+    <p class="desc">Google-Takeout <code>Calendar/*.ics</code> → dein Radicale-Kalender (<code>caldav.dopp.cloud</code>).</p>
+    <div class="row">
+      <input type="file" accept=".ics,.ical" class="file">
+      <button class="preview">Vorschau</button>
+      <button class="import primary">Importieren</button>
+    </div>
+    <div class="out"></div>
+  </section>
+
+  <section class="card" data-type="contacts">
+    <h2>Kontakte</h2>
+    <p class="desc">Google-Takeout <code>Contacts/*.vcf</code> → dein Adressbuch (CardDAV, <code>&lt;user&gt;/contacts</code>).</p>
+    <div class="row">
+      <input type="file" accept=".vcf" class="file">
+      <button class="preview">Vorschau</button>
+      <button class="import primary">Importieren</button>
+    </div>
+    <div class="out"></div>
+  </section>
+
+  <section class="card" data-type="keep" data-multi="1">
+    <h2>Google Keep — Notizen</h2>
+    <p class="desc">Keep-Ordner als <code>.zip</code> (empfohlen, inkl. Anhänge) oder einzelne <code>.json</code> → dein Notiz-Vault <code>Google Keep/</code>.</p>
+    <div class="row">
+      <input type="file" accept=".zip,.json" class="file" multiple>
+      <button class="preview">Vorschau</button>
+      <button class="import primary">Importieren</button>
+    </div>
+    <div class="out"></div>
+  </section>
+
+  <section class="card" data-type="music">
+    <h2>Musik-Einkaufsliste</h2>
+    <p class="desc">YouTube-Music <code>history/watch-history.json</code> → Abgleich mit deiner Jellyfin-Bibliothek → Liste fehlender Alben nach Häufigkeit.</p>
+    <div class="row">
+      <input type="file" accept=".json" class="file">
+      <button class="analyze primary">Analysieren</button>
+      <button class="exp-csv" disabled>CSV export</button>
+      <button class="exp-md" disabled>Markdown export</button>
+    </div>
+    <div class="out"></div>
+    <div class="result"></div>
+  </section>
+
+  <p class="muted">Angemeldet via Authelia — es wird ausschließlich für deinen eingeloggten Benutzer importiert.</p>
+</main>
+
+<script>
+const $ = (sel, el=document) => el.querySelector(sel);
+
+fetch('/api/whoami').then(r=>r.json()).then(d=>{
+  $('#who').textContent = d.user ? ('Benutzer: ' + d.user) : 'nicht angemeldet';
+}).catch(()=>{ $('#who').textContent = 'nicht angemeldet'; });
+
+function setOut(card, msg, cls='') {
+  const out = $('.out', card); out.className = 'out ' + cls; out.textContent = msg;
+}
+
+function fileForm(card, multi) {
+  const input = $('.file', card);
+  if (!input.files.length) { setOut(card, 'Bitte zuerst eine Datei wählen.', 'err'); return null; }
+  const fd = new FormData();
+  if (multi) { for (const f of input.files) fd.append('files', f); }
+  else { fd.append('file', input.files[0]); }
+  return fd;
+}
+
+async function callEndpoint(card, path, multi) {
+  const fd = fileForm(card, multi); if (!fd) return null;
+  setOut(card, '… läuft', '');
+  const r = await fetch(path, { method:'POST', body: fd });
+  const d = await r.json();
+  if (!r.ok || d.error) { setOut(card, 'Fehler: ' + (d.error || d.detail || r.status), 'err'); return null; }
+  return d;
+}
+
+function fmtGeneric(d) {
+  return Object.entries(d).filter(([k])=>k!=='type')
+    .map(([k,v]) => `${k}: ${v}`).join('\n');
+}
+
+document.querySelectorAll('.card[data-type]').forEach(card => {
+  const type = card.dataset.type;
+  const multi = card.dataset.multi === '1';
+  const prev = $('.preview', card), imp = $('.import', card);
+
+  if (prev) prev.onclick = async () => {
+    const d = await callEndpoint(card, `/api/${type}/preview`, multi);
+    if (d) setOut(card, 'Vorschau:\n' + fmtGeneric(d), 'ok');
+  };
+  if (imp) imp.onclick = async () => {
+    const d = await callEndpoint(card, `/api/${type}/import`, multi);
+    if (d) setOut(card, 'Importiert:\n' + fmtGeneric(d), 'ok');
+  };
+});
+
+// --- music ---
+const mcard = document.querySelector('.card[data-type="music"]');
+let lastAlbums = [];
+$('.analyze', mcard).onclick = async () => {
+  const d = await callEndpoint(mcard, '/api/music/analyze', false);
+  if (!d) return;
+  lastAlbums = d.albums || [];
+  const cap = d.resolve_cap ? ` (Album-Auflösung auf Top ${d.resolve_cap} begrenzt)` : '';
+  setOut(mcard,
+    `Bibliothek: ${d.library_size} Tracks · Historie: ${d.history_plays} Abspielungen, ` +
+    `${d.unique_tracks} Songs · schon vorhanden: ${d.owned_matches} · fehlend: ${d.missing_tracks} ` +
+    `(aufgelöst ${d.resolved_tracks}, offen ${d.unresolved_tracks})${cap}`, 'ok');
+  renderAlbums(mcard, lastAlbums);
+  $('.exp-csv', mcard).disabled = lastAlbums.length === 0;
+  $('.exp-md', mcard).disabled = lastAlbums.length === 0;
+};
+
+function renderAlbums(card, albums) {
+  const box = $('.result', card);
+  if (!albums.length) { box.innerHTML = '<p class="muted">Keine fehlenden Alben gefunden.</p>'; return; }
+  const rows = albums.slice(0, 200).map(a =>
+    `<tr><td>${esc(a.album)}</td><td>${esc(a.artist)}</td>` +
+    `<td class="num">${a.heard_tracks}</td><td class="num">${a.total_plays}</td></tr>`).join('');
+  box.innerHTML = `<table><thead><tr><th>Album</th><th>Artist</th>` +
+    `<th class="num">Gehörte Tracks</th><th class="num">Abspielungen</th></tr></thead><tbody>${rows}</tbody></table>` +
+    (albums.length > 200 ? `<p class="muted">… ${albums.length-200} weitere in den Exporten.</p>` : '');
+}
+
+function esc(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function exportList(fmt, filename) {
+  const r = await fetch(`/api/music/export/${fmt}`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ albums: lastAlbums })
+  });
+  const text = await r.text();
+  const blob = new Blob([text], {type:'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+$('.exp-csv', mcard).onclick = () => exportList('csv', 'einkaufsliste.csv');
+$('.exp-md', mcard).onclick = () => exportList('md', 'einkaufsliste.md');
+</script>
+</body>
+</html>

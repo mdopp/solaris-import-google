@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: solaris-import-google
+  labels:
+    app: solaris-import-google
+  annotations:
+    servicebay.label: "Google-Import"
+    servicebay.schema-version: "1"
+    # Served at import.<PUBLIC_DOMAIN> via NPM WITH Authelia forward-auth (the
+    # proxy snippet in variables.json injects Remote-User). radicale + file-share
+    # must exist first: their data dirs are the write targets mounted below.
+    servicebay.dependencies: "nginx,auth,radicale,file-share"
+    servicebay.ports: "{{IMPORT_PORT}}/tcp"
+    servicebay.healthcheck: |
+      url: http://localhost:{{IMPORT_PORT}}/healthz
+      interval: 30s
+      timeout: 5s
+      startup_timeout: 3m
+    # The /fileshare mount is the SHARED, multi-writer file-share/data tree
+    # (samba/syncthing/jellyfin/etc). Disable the kube recursive SELinux relabel
+    # on our container so it doesn't walk that whole tree — same footgun the
+    # media pod documents (#1731).
+    io.podman.annotations.label/import: "disable"
+spec:
+  # hostNetwork so NPM (also hostNetwork) reaches the app on the host port and
+  # the app can be fronted by Authelia. The app rejects any request lacking the
+  # Authelia Remote-User header, so a direct LAN hit can't bypass SSO.
+  hostNetwork: true
+  restartPolicy: Always
+  containers:
+  - name: import
+    image: ghcr.io/mdopp/solaris-import-google:latest
+    env:
+    - name: PORT
+      value: "{{IMPORT_PORT}}"
+    - name: REMOTE_USER_HEADER
+      value: "Remote-User"
+    - name: REQUIRE_REMOTE_USER
+      value: "true"
+    - name: RADICALE_DATA
+      value: "/radicale"
+    - name: FILESHARE_DATA
+      value: "/fileshare"
+    - name: IMPORT_DATA_DIR
+      value: "/data"
+    # Referencing {{PUBLIC_DOMAIN}} makes the manifest assembler inject the
+    # PUBLIC_DOMAIN global the install runner needs to build the
+    # import.<PUBLIC_DOMAIN> proxy host + Authelia forward-auth.
+    - name: PUBLIC_DOMAIN
+      value: "{{PUBLIC_DOMAIN}}"
+    ports:
+    - containerPort: {{IMPORT_PORT}}
+    volumeMounts:
+    - mountPath: /radicale
+      name: radicale-data
+    - mountPath: /fileshare
+      name: fileshare-data
+    - mountPath: /data
+      name: import-data
+  volumes:
+  # Radicale's multifilesystem storage — we write user calendar/addressbook
+  # collections here directly (owner_only rights leave no admin DAV path).
+  - name: radicale-data
+    hostPath:
+      path: {{DATA_DIR}}/radicale/data
+      type: Directory
+  # The file-share tree: holds the Obsidian notes vault (notes/users/<user>/)
+  # and the music library (music/) scanned for the shopping list.
+  - name: fileshare-data
+    hostPath:
+      path: {{DATA_DIR}}/file-share/data
+      type: Directory
+  # Writable scratch: ytmusicapi album cache.
+  - name: import-data
+    hostPath:
+      path: {{DATA_DIR}}/solaris-import-google
+      type: DirectoryOrCreate

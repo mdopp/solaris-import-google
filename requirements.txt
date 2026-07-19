@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+icalendar==6.1.0
+vobject==0.9.9
+mutagen==1.47.0
+ytmusicapi==1.8.2
+requests==2.32.3

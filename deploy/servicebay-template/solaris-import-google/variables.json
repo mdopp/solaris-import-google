@@ -1,0 +1,20 @@
+{
+  "IMPORT_PORT": {
+    "type": "text",
+    "description": "HTTP port the import app binds on the host. NPM forwards import.<PUBLIC_DOMAIN> here.",
+    "default": "8097"
+  },
+  "IMPORT_SUBDOMAIN": {
+    "type": "subdomain",
+    "description": "Subdomain for the Google-Import UI. Authelia forward-auth in the proxy snippet means the SSO login appears before the app loads, and the authenticated user is passed to the app as Remote-User — everything is imported for that user.",
+    "default": "import",
+    "exposure": "public",
+    "proxyPort": "IMPORT_PORT",
+    "proxyConfig": {
+      "allow_websocket_upgrade": true,
+      "block_exploits": true,
+      "ssl_forced": true,
+      "advanced_config": "auth_request /authelia;\nauth_request_set $target_url $scheme://$http_host$request_uri;\nauth_request_set $user $upstream_http_remote_user;\nauth_request_set $groups $upstream_http_remote_groups;\nauth_request_set $name $upstream_http_remote_name;\nauth_request_set $email $upstream_http_remote_email;\nauth_request_set $redirect $upstream_http_location;\nproxy_set_header Remote-User $user;\nproxy_set_header Remote-Groups $groups;\nproxy_set_header Remote-Name $name;\nproxy_set_header Remote-Email $email;\nerror_page 401 =302 $redirect;\n\nlocation = /authelia {\n    internal;\n    proxy_pass http://127.0.0.1:9091/api/authz/auth-request;\n    proxy_pass_request_body off;\n    proxy_set_header Content-Length \"\";\n    proxy_set_header X-Original-URL $scheme://$http_host$request_uri;\n    proxy_set_header X-Original-Method $request_method;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Real-IP $remote_addr;\n}"
+    }
+  }
+}

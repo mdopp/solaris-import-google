@@ -17,6 +17,9 @@ _FEAT = re.compile(r"\b(feat|ft|featuring|prod)\b.*", re.IGNORECASE)
 
 def normalize(s: str) -> str:
     s = s or ""
+    # German ß and "ss" are written interchangeably (Großstadt vs Grossstadt);
+    # fold them so the two spellings match. NFKD then handles ä/ö/ü etc.
+    s = s.replace("ß", "ss").replace("ẞ", "ss")
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = s.lower().replace("&", " and ")

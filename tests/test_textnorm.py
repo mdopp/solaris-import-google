@@ -18,5 +18,9 @@ def test_normalize_empty():
     assert normalize(None) == ""
 
 
+def test_normalize_eszett_matches_ss():
+    assert normalize("Großstadtgeflüster") == normalize("Grossstadtgefluster")
+
+
 def test_track_key_combines_normalized():
     assert track_key("The Offspring", "The Kids") == "the offspring\tthe kids"

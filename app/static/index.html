@@ -235,6 +235,7 @@
         <button class="ghost act-cancel" style="display:none">Abbrechen</button>
         <button class="ghost exp-csv" disabled>CSV export</button>
         <button class="ghost exp-md" disabled>Markdown export</button>
+        <button class="ghost exp-notes" disabled>In Notizen (Solaris)</button>
       </div>
       <div class="progress"><div class="ptrack"><div class="pbar"></div></div><div class="ptext"></div></div>
       <div class="out"></div>
@@ -369,8 +370,10 @@ function renderResult(result){
     `</div>`,'ok');
   $('.tree-search',mcard).style.display=lastGroups.length?'':'none';
   renderTree();
-  $('.exp-csv',mcard).disabled=!lastGroups.length;
-  $('.exp-md',mcard).disabled=!lastGroups.length;
+  const none=!lastGroups.length;
+  $('.exp-csv',mcard).disabled=none;
+  $('.exp-md',mcard).disabled=none;
+  $('.exp-notes',mcard).disabled=none;
 }
 
 $('.act-analyze',mcard).onclick=async()=>{
@@ -474,6 +477,16 @@ async function exportList(fmt,filename){
 }
 $('.exp-csv',mcard).onclick=()=>exportList('csv','einkaufsliste.csv');
 $('.exp-md',mcard).onclick=()=>exportList('md','einkaufsliste.md');
+$('.exp-notes',mcard).onclick=async e=>{
+  const b=e.currentTarget, label=b.textContent; b.disabled=true; b.textContent='… speichere';
+  try{
+    const r=await fetch('/api/music/export/notes',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({groups:effectiveGroups()})});
+    const d=await r.json();
+    b.textContent=(r.ok&&d.written)?'✓ in Notizen':'Fehler';
+  }catch(err){ b.textContent='Fehler'; }
+  setTimeout(()=>{ b.textContent=label; b.disabled=false; }, 2500);
+};
 </script>
 </body>
 </html>

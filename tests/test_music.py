@@ -108,6 +108,14 @@ def test_exports(music_dir):
     assert md.startswith("# Musik-Einkaufsliste") and "### " in md
 
 
+def test_to_notes_frontmatter(music_dir):
+    res = m.analyze(HIST, resolve=False)
+    note = m.to_notes(res["groups"], "mdopp", "2026-01-01T00:00:00+00:00")
+    assert note.startswith("---")
+    assert "type: music-wishlist" in note and "resident: mdopp" in note
+    assert "# Musik-Einkaufsliste" in note
+
+
 def test_progress_events(music_dir):
     evs = list(m.analyze_iter(HIST, resolve=False))
     assert {"parse", "match", "done"} <= {e["stage"] for e in evs}

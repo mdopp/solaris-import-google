@@ -488,6 +488,24 @@ def to_csv(groups: list[dict]) -> str:
     return buf.getvalue()
 
 
+def to_notes(groups: list[dict], user: str, generated: str) -> str:
+    """The shopping list as an OKF-friendly note for the Solaris knowledge layer
+    to enrich (physically-owned / wishlist / where-to-acquire). Human-readable
+    Markdown + frontmatter Solaris's ingest can key on. See README 'Solaris handoff'."""
+    fm = [
+        "---",
+        "type: music-wishlist",
+        "source: solaris-import-google",
+        f"resident: {user}",
+        f"generated: {generated}",
+        "tags: [musik, einkaufsliste, wishlist]",
+        "# Solaris: enrich each album with owned_physical / wishlist / source (where to get it).",
+        "---",
+        "",
+    ]
+    return "\n".join(fm) + to_markdown(groups)
+
+
 def to_markdown(groups: list[dict]) -> str:
     by_cat: dict[str, list[dict]] = {}
     for g in groups:

@@ -7,7 +7,10 @@ POSTs uploaded Takeout files to the per-type endpoints below.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -183,6 +186,22 @@ def music_export_csv(request: Request, payload: dict = Body(...)):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=einkaufsliste.csv"},
     )
+
+
+@app.post("/api/music/export/notes")
+def music_export_notes(request: Request, payload: dict = Body(...)):
+    """Hand the shopping list to Solaris: write it into the user's notes vault as
+    an OKF-friendly note so Solaris can enrich it (owned physically / wishlist /
+    where to acquire) — see README 'Solaris handoff'."""
+    user = _user(request)
+    body = music_shopping.to_notes(_groups(payload), user, datetime.now(timezone.utc).isoformat())
+    target = identity.notes_user_dir(user)
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / "Musik-Einkaufsliste.md"
+    path.write_text(body, encoding="utf-8")
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o666)  # so Solaris/Syncthing can manage it
+    return {"written": f"notes/users/{user}/{path.name}"}
 
 
 @app.post("/api/music/export/md")

@@ -91,6 +91,18 @@ def test_music_cancel_returns_bool(client):
     assert isinstance(client.post(f"/api/music/job/{jid}/cancel").json()["canceled"], bool)
 
 
+def test_music_export_notes_writes_vault(client):
+    from app import identity
+    groups = [{"category": "Musik", "artist": "B", "album": "A", "resolved": True,
+               "plays": 5, "songs": [{"title": "S", "plays": 5}]}]
+    r = client.post("/api/music/export/notes", json={"groups": groups})
+    assert r.status_code == 200 and r.json()["written"].endswith("Musik-Einkaufsliste.md")
+    p = identity.notes_user_dir("mdopp") / "Musik-Einkaufsliste.md"
+    assert p.exists()
+    txt = p.read_text()
+    assert "type: music-wishlist" in txt and "# Musik-Einkaufsliste" in txt
+
+
 def test_music_exports(client):
     groups = [{"category": "Musik", "artist": "B", "album": "A", "resolved": True,
                "plays": 5, "songs": [{"title": "S", "plays": 5}]}]

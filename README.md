@@ -75,6 +75,33 @@ Die CI (`publish.yml`) führt diese Suite als **Gate** aus: das Image wird nur
 gebaut/gepusht, wenn die Tests grün sind und die Coverage ≥ 85 % liegt
 (`build-and-push` → `needs: test`). Aktuell ~90 % über `app/`.
 
+## Solaris handoff (music wishlist)
+
+The library comparison only knows what's **digitally** ripped (the `music/` tree).
+It cannot know what you own **physically** (CD/vinyl), what's on a **wishlist**, or
+**where to get** something (a friend who's a fan). That knowledge lives in the
+Solaris OKF notes. So the tool does the mechanical part ("listened but not in the
+digital library") and hands the list to Solaris to enrich.
+
+`POST /api/music/export/notes` (UI: **„In Notizen (Solaris)"**) writes the shopping
+list to `notes/users/<user>/Musik-Einkaufsliste.md` — human-readable Markdown plus
+frontmatter for Solaris to key on:
+
+```yaml
+---
+type: music-wishlist
+source: solaris-import-google
+resident: <user>
+generated: <iso8601>
+tags: [musik, einkaufsliste, wishlist]
+---
+```
+
+**Contract for the Solaris side** (separate work, `mdopp/solarisbay`): ingest that
+note and enrich each album with `owned_physical` (suppress / "just rip it"),
+`wishlist` (mark), and `source` (where to acquire — e.g. a resident who's a fan).
+Tracked in `mdopp/solarisbay` (handoff issue).
+
 ## Deployment (ServiceBay)
 
 1. Image bauen/pushen (GitHub Actions `publish.yml` → `ghcr.io/mdopp/solaris-import-google:latest`).

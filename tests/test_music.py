@@ -112,3 +112,91 @@ def test_progress_events(music_dir):
     evs = list(m.analyze_iter(HIST, resolve=False))
     assert {"parse", "match", "done"} <= {e["stage"] for e in evs}
     assert evs[-1]["pct"] == 100 and "result" in evs[-1]
+
+
+# --- parsing / categorisation --------------------------------------------
+
+def _hist(title, channel, vid="v"):
+    return json.dumps([{
+        "header": "YouTube Music", "title": title + " angesehen",
+        "titleUrl": f"https://music.youtube.com/watch?v={vid}",
+        "subtitles": [{"name": channel}],
+    }]).encode()
+
+
+def test_parses_artist_title_from_non_topic_upload():
+    p = list(m.aggregate_plays(_hist("Grossstadtgeflüster - Ich muss gar nichts", "KingFreakyFreak")).values())[0]
+    assert p["artist"] == "Grossstadtgeflüster" and p["title"] == "Ich muss gar nichts"
+    assert p["topic"] is False and p["hoerspiel"] is False
+
+
+def test_strips_video_tags():
+    p = list(m.aggregate_plays(_hist("Band - Song (Official Video)", "Uploader")).values())[0]
+    assert p["artist"] == "Band" and p["title"] == "Song"
+
+
+def test_topic_title_not_split():
+    p = list(m.aggregate_plays(_hist("A - B", "Artist - Topic")).values())[0]
+    assert p["artist"] == "Artist" and p["title"] == "A - B" and p["topic"] is True
+
+
+def test_hoerspiel_detected_and_not_music(music_dir):
+    hist = _hist("Kapitel 10: Paw Patrol - Der Mighty Kinofilm", "SomeChannel")
+    p = list(m.aggregate_plays(hist).values())[0]
+    assert p["hoerspiel"] is True and p["title"].startswith("Kapitel 10")  # not split
+    res = m.analyze(hist, resolve=False)
+    assert any(g["category"] == "Hörspiel" for g in res["groups"])
+
+
+# --- album resolution is validated (never attach a wrong album) -----------
+
+class _FakeYT:
+    def __init__(self, watch=None, search=None):
+        self._w, self._s = watch, search or []
+
+    def get_watch_playlist(self, videoId, limit=1):
+        if self._w is None:
+            raise RuntimeError("no watch playlist")
+        return {"tracks": [self._w]}
+
+    def search(self, q, filter=None, limit=5):
+        return self._s
+
+
+def test_lookup_uses_direct_album_when_title_matches(monkeypatch):
+    monkeypatch.setattr(m, "_yt_client", lambda: _FakeYT(
+        watch={"title": "Anti-Hero", "album": {"name": "Midnights"}, "artists": [{"name": "Taylor Swift"}]}))
+    assert m._lookup_album("v", "Taylor Swift", "Anti-Hero") == ("Midnights", "Taylor Swift")
+
+
+def test_lookup_rejects_mix_and_searches(monkeypatch):
+    # watch returns an unrelated mix track (title mismatch) → reject; search finds
+    # the real artist album. This is the "everything lands in one wrong album" fix.
+    monkeypatch.setattr(m, "_yt_client", lambda: _FakeYT(
+        watch={"title": "Some Mix Song", "album": {"name": "Kiddisht"}, "artists": [{"name": "Kidda"}]},
+        search=[{"title": "Ich muss gar nichts", "album": {"name": "Muss laut sein"},
+                 "artists": [{"name": "Grossstadtgeflüster"}]}]))
+    assert m._lookup_album("v", "Grossstadtgeflüster", "Ich muss gar nichts") == \
+        ("Muss laut sein", "Grossstadtgeflüster")
+
+
+def test_lookup_returns_none_when_nothing_matches(monkeypatch):
+    monkeypatch.setattr(m, "_yt_client", lambda: _FakeYT(
+        watch={"title": "Mix", "album": {"name": "X"}, "artists": [{"name": "Y"}]},
+        search=[{"title": "Other", "album": {"name": "Z"}, "artists": [{"name": "Nope"}]}]))
+    assert m._lookup_album("v", "Grossstadtgeflüster", "Ich muss gar nichts") == (None, None)
+
+
+def test_set_cover_prefers_real_artist_over_various(music_dir):
+    hist = json.dumps([
+        _entry("Song1", "Real", "s1a"), _entry("Song1", "Real", "s1b"),
+        _entry("Song2", "Real", "s2a"), _entry("Song2", "Real", "s2b"),
+    ]).encode()
+    _seed_cache({
+        "s1a": {"album": "Comp", "artist": "Various Artists"},
+        "s1b": {"album": "Album", "artist": "Real"},
+        "s2a": {"album": "Comp", "artist": "Various Artists"},
+        "s2b": {"album": "Album", "artist": "Real"},
+    })
+    res = m.analyze(hist, resolve=True, cap=0)
+    assert {g["album"] for g in res["groups"]} == {"Album"}

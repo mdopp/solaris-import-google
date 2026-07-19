@@ -18,11 +18,40 @@ import csv
 import io
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 from . import config, library
-from .textnorm import track_key
+from .textnorm import normalize, track_key
+
+# Trailing video-title noise on non-Topic uploads: "(Official Video)", "[Lyrics]"…
+_VIDEO_TAG = re.compile(
+    r"\s*[\(\[][^\)\]]*(official|lyric|audio|visualizer|music\s*video|\bmv\b|hd|4k|remaster)[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
+_VARIOUS = {"various artists", "various", "va", "verschiedene interpreten",
+            "diverse", "compilation"}
+
+
+def _is_various(name: str | None) -> bool:
+    return normalize(name or "") in {normalize(x) for x in _VARIOUS}
+
+
+def _strip_video_tags(title: str) -> str:
+    return _VIDEO_TAG.sub("", title).strip() or title
+
+
+# Audiobook / audio-drama chapters: "Kapitel 12: …", "Folge 344", "Episode 3".
+_HOERSPIEL = re.compile(r"\b(kapitel|folge|teil|episode)\s*\d+", re.IGNORECASE)
+
+
+def _title_matches(a: str, b: str) -> bool:
+    """Loose title equality used to VALIDATE a resolution: the album we accept
+    must belong to the track we asked for (else get_watch_playlist's radio mix
+    would tag unrelated songs with a bogus album)."""
+    na, nb = normalize(a), normalize(b)
+    return bool(na and nb and (na == nb or na in nb or nb in na))
 
 # Resolve albums for at most this many missing tracks per run (most-played
 # first). The rest still appear, grouped as unresolved — see UNRESOLVED_LABEL.
@@ -71,8 +100,35 @@ def _entry_time(entry: dict) -> datetime | None:
         return None
 
 
+def _parse_track(entry: dict, subs: list) -> tuple[str, str, bool, bool] | None:
+    """Best-effort (artist, title, is_topic, is_hoerspiel) from a history entry.
+
+    - "<Artist> - Topic" channels are YT Music art tracks → clean artist/title.
+    - "Kapitel/Folge N …" titles are audiobook/audio-drama chapters (Hörspiel);
+      we keep the channel as the artist and do NOT treat them as music.
+    - other uploads usually title as "Artist - Song" while the channel is just an
+      uploader, so split the title and drop "(Official Video)"-style tags.
+    """
+    channel = subs[0].get("name") or ""
+    topic = channel.strip().endswith("- Topic")
+    title = _clean_title(entry.get("title", ""))
+    if not title:
+        return None
+    hoerspiel = bool(_HOERSPIEL.search(title)) or "hörspiel" in title.lower()
+    if topic:
+        artist = _clean_artist(channel)
+    elif hoerspiel:
+        artist = _clean_artist(channel)
+    elif " - " in title:
+        left, right = title.split(" - ", 1)
+        artist, title = left.strip(), (_strip_video_tags(right.strip()) or right.strip())
+    else:
+        artist, title = _clean_artist(channel), _strip_video_tags(title)
+    return artist, title, topic, hoerspiel
+
+
 def aggregate_plays(history_bytes: bytes, since: datetime | None = None) -> dict[str, dict]:
-    """Return videoId(or synthetic key) -> {artist, title, videoId, count}.
+    """Return videoId(or synthetic key) -> {artist, title, videoId, count, …}.
 
     ``since`` (if given) drops plays older than that timestamp.
     """
@@ -88,22 +144,21 @@ def aggregate_plays(history_bytes: bytes, since: datetime | None = None) -> dict
         subs = entry.get("subtitles") or []
         if not subs:
             continue
-        raw_name = subs[0].get("name") or ""
-        # Auto-generated "<Artist> - Topic" channels are YT Music "Art Tracks" —
-        # a reliable signal for actual music (vs a podcast/audio-drama channel).
-        topic = raw_name.strip().endswith("- Topic")
-        artist = _clean_artist(raw_name)
-        title = _clean_title(entry.get("title", ""))
-        if not title:
+        parsed = _parse_track(entry, subs)
+        if parsed is None:
             continue
+        artist, title, topic, hoerspiel = parsed
         vid = _video_id(entry.get("titleUrl", "")) or ""
         key = vid or track_key(artist, title)
-        rec = plays.setdefault(
-            key, {"artist": artist, "title": title, "videoId": vid, "count": 0, "topic": topic}
-        )
+        rec = plays.setdefault(key, {
+            "artist": artist, "title": title, "videoId": vid, "count": 0,
+            "topic": topic, "hoerspiel": hoerspiel,
+        })
         rec["count"] += 1
         if topic:
             rec["topic"] = True
+        if hoerspiel:
+            rec["hoerspiel"] = True
     return plays
 
 
@@ -145,16 +200,47 @@ def _yt_client():
     return _yt
 
 
-def _lookup_album(video_id: str) -> tuple[str | None, str | None]:
+def _lookup_album(video_id: str, artist: str | None = None,
+                  title: str | None = None) -> tuple[str | None, str | None]:
+    """Resolve (album, album_artist) for a track — VALIDATED. get_watch_playlist
+    returns a radio mix for non-music videos, so we only accept its album when the
+    returned track's title matches ours. If that fails or the album is a "Various
+    Artists" compilation, search by artist+title and accept only an
+    artist+title-matching hit. We prefer *unresolved* over *wrong*."""
+    album, alb_artist = None, None
     try:
         wp = _yt_client().get_watch_playlist(videoId=video_id, limit=1)
         track = (wp.get("tracks") or [{}])[0]
-        album = (track.get("album") or {}).get("name")
-        artists = track.get("artists") or []
-        artist = artists[0]["name"] if artists else None
-        return album, artist
+        if title and _title_matches(track.get("title", ""), title):
+            album = (track.get("album") or {}).get("name")
+            arts = track.get("artists") or []
+            alb_artist = arts[0]["name"] if arts else None
+    except Exception:
+        pass
+    if artist and title and (not album or _is_various(alb_artist)):
+        a2, art2 = _search_album(artist, title)
+        if a2:
+            album, alb_artist = a2, art2
+    return album, alb_artist
+
+
+def _search_album(artist: str, title: str) -> tuple[str | None, str | None]:
+    """Find the artist's own album for a song via search; accept only a result
+    whose artist AND title match, so we never attach a wrong album."""
+    try:
+        results = _yt_client().search(f"{artist} {title}", filter="songs", limit=5)
     except Exception:
         return None, None
+    want = normalize(artist)
+    for r in results or []:
+        alb = (r.get("album") or {}).get("name")
+        arts = r.get("artists") or []
+        if not alb or not arts or not _title_matches(r.get("title", ""), title):
+            continue
+        match = next((a["name"] for a in arts if normalize(a.get("name", "")) == want), None)
+        if match:
+            return alb, match
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -234,13 +320,14 @@ def analyze_iter(history_bytes: bytes, *, min_plays: int = 1, months: int = 0,
         if is_canceled():
             return
         vid = p["videoId"]
-        if not resolve or not vid:
+        if not resolve or not vid or p.get("hoerspiel"):
+            # Hörspiel/audiobook chapters aren't music albums — never resolve them.
             p["album"], p["album_artist"], p["resolved"] = None, p["artist"], False
         else:
             if vid in cache:
                 album, art = cache[vid].get("album"), cache[vid].get("artist")
             elif (i - 1) < cap:
-                album, art = _lookup_album(vid)
+                album, art = _lookup_album(vid, p["artist"], p["title"])
                 cache[vid] = {"album": album, "artist": art}
             else:
                 album, art = None, None  # over the cap — stays unresolved, not dropped
@@ -300,11 +387,13 @@ def _build_groups(missing: list[dict]) -> tuple[list[dict], int]:
         s = songs.get(k)
         if s is None:
             s = {"artist": p.get("album_artist") or p["artist"], "title": p["title"],
-                 "plays": 0, "albums": set(), "music": False}
+                 "plays": 0, "albums": set(), "music": False, "hoerspiel": False}
             songs[k] = s
         s["plays"] += p["count"]
         if p.get("topic"):
             s["music"] = True
+        if p.get("hoerspiel"):
+            s["hoerspiel"] = True
         if p.get("album"):
             s["albums"].add((p.get("album_artist") or p["artist"], p["album"]))
 
@@ -321,7 +410,9 @@ def _build_groups(missing: list[dict]) -> tuple[list[dict], int]:
             cov = ks & remaining
             if not cov:
                 continue
-            score = (len(cov), sum(songs[k]["plays"] for k in cov))
+            # Prefer covering more songs; on ties prefer a real artist album
+            # over a "Various Artists" compilation, then more plays.
+            score = (len(cov), 0 if _is_various(alb[0]) else 1, sum(songs[k]["plays"] for k in cov))
             if best_score is None or score > best_score:
                 best_alb, best_cov, best_score = alb, cov, score
         chosen[best_alb] = best_cov
@@ -344,11 +435,17 @@ def _group_entry(artist, album, keys, songs, resolved) -> dict:
     slist = sorted(
         ({"title": songs[k]["title"], "plays": songs[k]["plays"]} for k in keys),
         key=lambda x: x["plays"], reverse=True)
-    music_votes = sum(1 for k in keys if songs[k]["music"])
-    # Best-effort: "- Topic" art tracks are music; the rest we can't reliably
-    # tell apart from Takeout, so they land in "Sonstiges" for the user to
-    # re-categorise (Musik / Podcast / Hörspiel).
-    category = "Musik" if music_votes * 2 >= len(keys) else "Sonstiges"
+    # "Kapitel/Folge N" → Hörspiel; a "- Topic" art track or a resolved album →
+    # Musik; everything else is "Sonstiges" for the user to re-categorise. We
+    # can't reliably tell podcast from Hörspiel from Takeout alone.
+    hoer_votes = sum(1 for k in keys if songs[k]["hoerspiel"])
+    music_votes = sum(1 for k in keys if songs[k]["music"] or songs[k]["albums"])
+    if hoer_votes * 2 >= len(keys):
+        category = "Hörspiel"
+    elif music_votes:
+        category = "Musik"
+    else:
+        category = "Sonstiges"
     return {"category": category, "artist": artist, "album": album,
             "resolved": resolved, "plays": sum(x["plays"] for x in slist), "songs": slist}
 
